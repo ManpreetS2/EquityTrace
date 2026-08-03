@@ -1,0 +1,15 @@
+{
+  "accessionNumber": [
+    "0000320193-21-000105",
+    "0000320193-20-000096"
+  ],
+  "filingDate": ["2021-10-29", "2020-10-30"],
+  "reportDate": ["2021-09-25", "2020-09-26"],
+  "acceptanceDateTime": ["20211029160111", null],
+  "form": ["10-K", "10-K"],
+  "fileNumber": ["001-36743", "001-36743"],
+  "filmNumber": ["211234001", "201234002"],
+  "primaryDocument": ["aapl-20210925.htm", "aapl-20200926.htm"],
+  "isXBRL": [1, 1],
+  "isInlineXBRL": [1, 1]
+}
