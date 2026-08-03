@@ -1,0 +1,122 @@
+{
+  "cik": 320193,
+  "entityName": "Apple Inc.",
+  "facts": {
+    "us-gaap": {
+      "RevenueFromContractWithCustomerExcludingAssessedTax": {
+        "label": "Revenue",
+        "description": "Amount of revenue.",
+        "units": {
+          "USD": [
+            {
+              "start": "2023-10-01",
+              "end": "2023-12-30",
+              "val": 119575000000,
+              "accn": "0000320193-24-000050",
+              "fy": 2024,
+              "fp": "Q1",
+              "form": "10-Q",
+              "filed": "2024-02-15",
+              "frame": "CY2023Q4"
+            },
+            {
+              "start": "2023-10-01",
+              "end": "2023-12-30",
+              "val": 119575000000,
+              "accn": "0000320193-24-000050",
+              "fy": 2024,
+              "fp": "Q1",
+              "form": "10-Q",
+              "filed": "2024-02-15",
+              "frame": "CY2023Q4"
+            },
+            {
+              "start": "2022-09-25",
+              "end": "2023-09-30",
+              "val": 383285000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ],
+          "USD/shares": [
+            {
+              "end": "2023-12-30",
+              "val": 7.67,
+              "accn": "0000320193-24-000050",
+              "fy": 2024,
+              "fp": "Q1",
+              "form": "10-Q",
+              "filed": "2024-02-15"
+            }
+          ]
+        }
+      },
+      "Assets": {
+        "label": "Assets",
+        "description": "Sum of assets.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-12-30",
+              "val": 353644000000,
+              "accn": "0000320193-24-000050",
+              "fy": 2024,
+              "fp": "Q1",
+              "form": "10-Q",
+              "filed": "2024-02-15"
+            },
+            {
+              "end": "2023-09-30",
+              "val": 352583000000,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "label": "Net Income",
+        "description": "Net income or loss.",
+        "units": {
+          "USD": [
+            {
+              "start": "2023-10-01",
+              "end": "2023-12-30",
+              "val": "33916000000",
+              "accn": "0000320193-24-000050",
+              "fy": 2024,
+              "fp": "Q1",
+              "form": "10-Q",
+              "filed": "2024-02-15"
+            }
+          ]
+        }
+      }
+    },
+    "dei": {
+      "EntityCommonStockSharesOutstanding": {
+        "label": "Shares Outstanding",
+        "description": "Shares outstanding.",
+        "units": {
+          "shares": [
+            {
+              "end": "2024-01-19",
+              "val": 15437686000,
+              "accn": "0000320193-24-000050",
+              "fy": 2024,
+              "fp": "Q1",
+              "form": "10-Q",
+              "filed": "2024-02-15"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
