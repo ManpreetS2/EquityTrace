@@ -130,14 +130,43 @@ class Settings(BaseSettings):
         ),
     )
 
-    @field_validator("sec_email", mode="before")
+    # --- Market data (v0.3a); no FILINGEDGE_* legacy aliases ---
+    market_data_provider: str = Field(
+        default="twelve_data",
+        validation_alias="EQUITYTRACE_MARKET_DATA_PROVIDER",
+    )
+    twelve_data_api_key: str = Field(
+        default="",
+        validation_alias="EQUITYTRACE_TWELVE_DATA_API_KEY",
+    )
+    market_data_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        validation_alias="EQUITYTRACE_MARKET_DATA_TIMEOUT_SECONDS",
+    )
+    market_data_requests_per_minute: float = Field(
+        default=8.0,
+        gt=0,
+        validation_alias="EQUITYTRACE_MARKET_DATA_REQUESTS_PER_MINUTE",
+    )
+    market_data_max_retries: int = Field(
+        default=4,
+        ge=1,
+        validation_alias="EQUITYTRACE_MARKET_DATA_MAX_RETRIES",
+    )
+    market_data_cache_dir: Path = Field(
+        default=Path("data/cache/market"),
+        validation_alias="EQUITYTRACE_MARKET_DATA_CACHE_DIR",
+    )
+
+    @field_validator("sec_email", "twelve_data_api_key", mode="before")
     @classmethod
     def _strip_email(cls, value: object) -> object:
         if isinstance(value, str):
             return value.strip()
         return value
 
-    @field_validator("database_path", "cache_dir", mode="before")
+    @field_validator("database_path", "cache_dir", "market_data_cache_dir", mode="before")
     @classmethod
     def _coerce_path(cls, value: object) -> object:
         if isinstance(value, str) and value.strip():
@@ -154,6 +183,16 @@ class Settings(BaseSettings):
                 "SEC fair-access policy requires an identifying User-Agent."
             )
         return self.sec_email
+
+    def require_twelve_data_api_key(self) -> str:
+        """Return the Twelve Data API key or raise a clear configuration error."""
+        if not self.twelve_data_api_key:
+            raise ConfigurationError(
+                "EQUITYTRACE_TWELVE_DATA_API_KEY is required for live market-data requests. "
+                "Copy .env.example to .env and set your Twelve Data API key. "
+                "SEC-only commands do not require this key."
+            )
+        return self.twelve_data_api_key
 
     def user_agent(self) -> str:
         """Build a descriptive SEC User-Agent string."""

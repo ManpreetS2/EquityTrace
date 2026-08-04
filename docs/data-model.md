@@ -1,4 +1,4 @@
-# Data model (v0.2)
+# Data model (v0.3a)
 
 ## Conceptual model
 
@@ -64,3 +64,35 @@ Table names and persisted migration identifiers do not embed the product brand.
 Databases created under the historical FilingEdge default path
 (`data/filingedge.duckdb`) remain compatible when opened via an explicit
 `EQUITYTRACE_DATABASE_PATH` (or temporary `FILINGEDGE_DATABASE_PATH`) setting.
+
+
+### market_instruments / market_symbol_mappings / daily_price_bars / market_data_runs
+
+Additive v0.3a tables. `daily_price_bars` is unique on
+`(instrument_id, provider, trading_date, adjustment_mode)` so raw and adjusted
+series coexist. Prices use `DECIMAL(18, 6)` storage. `available_at` is the
+exchange-local 16:15 convention converted to UTC; `fetched_at` records when
+EquityTrace downloaded the bar.
+
+`market_symbol_mappings` uses a surrogate `mapping_id` primary key so the same
+provider symbol can be reused by a different instrument after a prior mapping
+expires (`valid_from` / `valid_to`). Overlapping validity windows for the same
+provider symbol across instruments are rejected.
+
+`market_instruments.canonical_symbol` remains `UNIQUE` in v0.3a: one active
+display ticker per instrument. Historical ticker reuse across issuers is a
+documented limitation; `instrument_id` is the durable key, but v0.3a still
+derives it from the current display symbol.
+
+SPY and other benchmarks can exist as ETF/index instruments without an SEC
+issuer link. Equities preferably link to `securities` / `issuers` when present.
+
+### Market response cache
+
+Optional local cache under `EQUITYTRACE_MARKET_DATA_CACHE_DIR` (default
+`data/cache/market`). Cache keys include provider, symbol, interval, date
+range, and adjustment mode — never the API key. Only successful payloads with a
+`values` list are cached; error payloads are not. There is no TTL in v0.3a:
+disable `EQUITYTRACE_ENABLE_CACHE` to force fresh provider fetches when
+corrections must be observed immediately. Corrupt cache files are ignored and
+replaced.

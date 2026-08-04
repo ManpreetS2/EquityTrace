@@ -1,4 +1,4 @@
-# Architecture (v0.2)
+# Architecture (v0.3a)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
 normalization, persistence, canonical statements, factors, and CLI.
@@ -102,3 +102,13 @@ to earnings scores better). Ranking ties share competition rank and percentile.
 
 `httpx.MockTransport` serves fixtures from `tests/fixtures/sec/`. Statement and
 factor tests use fictional seeded facts. No live SEC calls in CI.
+
+
+9. **Market data (`equitytrace.market`)**
+   - Provider protocol (`MarketDataProvider`) with Twelve Data as the first implementation
+   - Date-range requests omit `outputsize` (avoids silent truncation) and use overlapping calendar windows
+   - Requests-per-minute limiter (monotonic clock) on live calls only; cache hits do not consume quota
+   - Raw and adjusted daily bars stored as distinct rows
+   - Conservative `available_at` = exchange-local 16:15 → UTC (unknown timezones rejected)
+   - Shares outstanding selected from stored SEC facts with point-in-time filters
+   - Market cap = raw close × shares; multi-class issuers are unavailable by default

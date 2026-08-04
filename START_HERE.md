@@ -1,6 +1,6 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace v0.2.
+Exact commands for a new developer on EquityTrace v0.3a.
 
 ## 1. Configure environment
 
@@ -73,7 +73,17 @@ uv run equitytrace rank \
   --period FY2023
 ```
 
-## 6. Run the offline test suite
+## 6. Optional market-data smoke (requires Twelve Data key)
+
+```bash
+# set EQUITYTRACE_TWELVE_DATA_API_KEY in .env first
+uv run equitytrace market ingest AAPL --start 2023-01-01 --end 2023-03-31
+uv run equitytrace market cap AAPL --date 2023-03-31
+```
+
+SEC-only workflows do not need a market-data key.
+
+## 7. Run the offline test suite
 
 ```bash
 uv run pytest

@@ -12,6 +12,7 @@ __all__ = [
     "FilingsRepository",
     "IngestionRepository",
     "IssuersRepository",
+    "MarketRepository",
     "SecuritiesRepository",
 ]
 
@@ -21,4 +22,8 @@ def __getattr__(name: str) -> object:
         from equitytrace.repositories.factors import FactorRepository
 
         return FactorRepository
+    if name == "MarketRepository":
+        from equitytrace.repositories.market import MarketRepository
+
+        return MarketRepository
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -9,7 +9,7 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **v0.2** builds on the v0.1 EDGAR ingestion pipeline (historically
+Version **v0.3a** (market-data foundation on top of v0.2) builds on the v0.1 EDGAR ingestion pipeline (historically
 published as FilingEdge): resolve tickers to CIKs, retrieve submissions and XBRL
 Company Facts, normalize them into structured records, store them in DuckDB,
 assemble comparable financial statements, and calculate point-in-time-safe
@@ -163,6 +163,12 @@ Preferred names:
 | `EQUITYTRACE_CACHE_DIR` | Optional HTTP cache directory |
 | `EQUITYTRACE_HTTP_TIMEOUT_SECONDS` | Request timeout |
 | `EQUITYTRACE_MAX_REQUESTS_PER_SECOND` | Rate limit (< 10) |
+| `EQUITYTRACE_MARKET_DATA_PROVIDER` | Market provider id (default: `twelve_data`) |
+| `EQUITYTRACE_TWELVE_DATA_API_KEY` | Required for live `market` commands only |
+| `EQUITYTRACE_MARKET_DATA_TIMEOUT_SECONDS` | Market HTTP timeout |
+| `EQUITYTRACE_MARKET_DATA_REQUESTS_PER_MINUTE` | Market rate limit |
+| `EQUITYTRACE_MARKET_DATA_MAX_RETRIES` | Transient retry budget |
+| `EQUITYTRACE_MARKET_DATA_CACHE_DIR` | Ignored market response cache (default: `data/cache/market`) |
 
 Legacy `FILINGEDGE_*` variables are still accepted temporarily when the matching
 `EQUITYTRACE_*` variable is unset. Prefer the new names; a deprecation warning
@@ -228,14 +234,53 @@ uv run pytest
 All SEC tests run offline against fixtures under `tests/fixtures/sec/` or
 fictional seeded facts.
 
-## Current limitations (v0.2)
+## Market data (v0.3a)
 
-- No historical market prices (FCF yield needs an explicit `--market-cap`)
-- No portfolios, rebalancing, or backtests
+EquityTrace stores **raw** (`adjustment_mode=none`) and **provider-adjusted**
+(`adjustment_mode=all`) daily OHLCV bars as separate rows. Market capitalization
+always uses **raw close × point-in-time SEC shares outstanding**.
+
+Daily bars become available at **16:15 exchange-local time** (converted to UTC).
+That is a conservative EquityTrace convention, not a claim about the exact
+vendor publication instant.
+
+Provider-adjusted history may be revised when corporate-action data changes; it
+is **not** a true vendor-vintage point-in-time archive. Do not use adjusted
+closes for market cap.
+
+Share-class ambiguity (for example Alphabet) returns **unavailable** rather than
+a fabricated class-level market cap.
+
+Configure Twelve Data with `EQUITYTRACE_TWELVE_DATA_API_KEY`. Review the
+provider’s licensing before redistribution, display, or commercial use. Live
+responses and caches stay under ignored `data/` paths and are never committed.
+
+```bash
+uv run equitytrace market ingest AAPL --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market ingest SPY --asset-type etf --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market prices AAPL --start 2023-01-01 --end 2023-12-31 --adjustment none
+uv run equitytrace market cap AAPL --date 2023-09-29
+uv run equitytrace market cap-series AAPL --start 2022-01-01 --end 2023-12-31 --frequency month-end
+```
+
+SEC-only commands continue to work without a market-data API key.
+
+## Current limitations (v0.3a)
+
+- No valuation multiples, momentum, volatility, beta, or drawdowns (v0.3b)
+- No portfolios, rebalancing, or backtests (v0.3c)
+- FCF yield still needs an explicit `--market-cap` argument (native wiring is v0.3b)
 - No frontend / research UI
 - Canonical statements are computed on demand (not fully materialized)
 - Concept mappings cover common us-gaap tags; unusual issuer tags may be missing
 - 10-K comparative columns that reuse the current `fy`/`fp` are disambiguated by
+  period end date, but unusual issuer tagging can still require mapping updates
+- `canonical_symbol` is unique per instrument in v0.3a (historical ticker reuse
+  across issuers is not fully modeled yet)
+- Multi-class detection uses distinct tickers linked to one issuer CIK; the
+  securities table has no share-class/active flag, so detection is conservative
+- Optional market response cache has no TTL; disable cache to force fresh fetches
+- Live Twelve Data responses are not exercised in CI (offline fixtures only)
   period end date and duration heuristics; unusual fiscal calendars may still warn
 - Q4 is not casually derived from annual − nine-month YTD
 - Large live Company Facts ingestions use per-CIK DELETE+INSERT without a
@@ -249,7 +294,9 @@ fictional seeded facts.
 
 See [docs/roadmap.md](docs/roadmap.md).
 
-- **v0.3** — Prices, portfolios, transaction-cost-aware backtests
+- **v0.3a** — Market data foundation (this release track)
+- **v0.3b** — Valuation, momentum, and risk
+- **v0.3c** — Portfolio construction and backtesting
 - **v1.0** — Strategy builder and research interface
 
 ## License

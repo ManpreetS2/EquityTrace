@@ -23,10 +23,27 @@
 * Cross-sectional ranking
 * CLI: `statements`, `factor`, `factors`, `rank`
 
-### v0.3
+### v0.3a — Market data foundation
 
-* Historical market prices
+* Provider-neutral daily OHLCV ingestion
+* Twelve Data `/time_series` implementation
+* Raw (`adjust=none`) and provider-adjusted (`adjust=all`) storage
+* Market instruments + provider symbol mappings
+* Point-in-time shares outstanding from SEC facts
+* Historically safe market-cap calculations
+* SPY / ETF benchmark price support
+* CLI: `market ingest`, `market prices`, `market cap`, `market cap-series`
+
+### v0.3b — Valuation, momentum, and risk
+
 * Native FCF yield using stored market cap
+* P/E, price-to-sales, price-to-book
+* Momentum factors
+* Volatility and beta
+* Drawdown analytics
+
+### v0.3c — Portfolio construction and backtesting
+
 * Portfolio construction
 * Rebalancing
 * Transaction costs
