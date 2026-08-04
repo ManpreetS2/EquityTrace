@@ -233,8 +233,26 @@ class TwelveDataProvider:
                     )
 
             for bar in response.bars:
-                if start_date <= bar.trading_date <= end_date:
+                if not (start_date <= bar.trading_date <= end_date):
+                    continue
+                if bar.trading_date in conflicting_dates:
+                    # Already rejected across windows; count additional sightings.
+                    duplicate_row_total += 1
+                    duplicate_total += 1
+                    continue
+                existing = merged.get(bar.trading_date)
+                if existing is None:
                     merged[bar.trading_date] = bar
+                    continue
+                duplicate_total += 1
+                if _provider_bars_identical(existing, bar):
+                    # Identical cross-window overlap: keep one, count the extra.
+                    duplicate_row_total += 1
+                    continue
+                # Conflicting cross-window duplicate: reject the trading date entirely.
+                del merged[bar.trading_date]
+                conflicting_dates.add(bar.trading_date)
+                duplicate_row_total += 2  # previously kept row + new conflicting row
 
         # Empty interior windows between populated windows are incomplete.
         if any(window_populated):

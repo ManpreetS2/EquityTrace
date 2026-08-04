@@ -61,6 +61,9 @@ class MarketInstrument(BaseModel):
     mic_code: str | None = None
     currency: str = "USD"
     exchange_timezone: str = "America/New_York"
+    # False until a live provider response confirms currency/timezone.
+    # Creation defaults (USD / America/New_York) are placeholders until confirmed.
+    market_metadata_confirmed: bool = False
     active: bool = True
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
