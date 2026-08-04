@@ -182,8 +182,9 @@ CREATE TABLE IF NOT EXISTS market_symbol_mappings (
     valid_to DATE,
     is_primary BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL,
-    FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+    updated_at TIMESTAMPTZ NOT NULL
+    -- Intentionally no FOREIGN KEY to market_instruments: DuckDB rejects parent-row
+    -- UPDATEs while FK children exist, which blocks safe instrument enrichment.
 );
 
 CREATE TABLE IF NOT EXISTS daily_price_bars (
@@ -203,8 +204,8 @@ CREATE TABLE IF NOT EXISTS daily_price_bars (
     source_metadata_json VARCHAR,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL,
-    PRIMARY KEY (instrument_id, provider, trading_date, adjustment_mode),
-    FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+    PRIMARY KEY (instrument_id, provider, trading_date, adjustment_mode)
+    -- No FK: see market_symbol_mappings note (DuckDB parent UPDATE limitation).
 );
 
 CREATE TABLE IF NOT EXISTS market_data_runs (
@@ -223,8 +224,8 @@ CREATE TABLE IF NOT EXISTS market_data_runs (
     unchanged_row_count INTEGER NOT NULL DEFAULT 0,
     rejected_row_count INTEGER NOT NULL DEFAULT 0,
     error_summary VARCHAR,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    -- No FK: see market_symbol_mappings note (DuckDB parent UPDATE limitation).
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_instruments_symbol ON market_instruments(canonical_symbol);
@@ -269,6 +270,7 @@ class Database:
         with self.session() as conn:
             conn.execute(SCHEMA_SQL)
             _ensure_market_symbol_mapping_schema(conn)
+            _ensure_market_child_tables_without_fk(conn)
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, notes)
@@ -298,6 +300,17 @@ class Database:
                 [
                     "0.3.0a",
                     "Legacy alias for 0.3.0-a market-data foundation",
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "0.3.0-a1",
+                    "Drop market child FKs to allow instrument enrichment under DuckDB",
                 ],
             )
         logger.info("Initialized DuckDB schema at %s", self.path)
@@ -334,8 +347,7 @@ def _ensure_market_symbol_mapping_schema(conn: duckdb.DuckDBPyConnection) -> Non
             valid_to DATE,
             is_primary BOOLEAN NOT NULL DEFAULT TRUE,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMPTZ NOT NULL,
-            FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+            updated_at TIMESTAMPTZ NOT NULL
         )
         """
     )
@@ -366,6 +378,139 @@ def _ensure_market_symbol_mapping_schema(conn: duckdb.DuckDBPyConnection) -> Non
         ON market_symbol_mappings(provider, provider_symbol)
         """
     )
+
+
+def _table_has_fk_to_instruments(conn: duckdb.DuckDBPyConnection, table: str) -> bool:
+    rows = conn.execute(
+        """
+        SELECT constraint_name
+        FROM information_schema.table_constraints
+        WHERE table_name = ?
+          AND constraint_type = 'FOREIGN KEY'
+        """,
+        [table],
+    ).fetchall()
+    return any("instrument_id" in str(r[0]).lower() for r in rows)
+
+
+def _rebuild_table_without_fk(
+    conn: duckdb.DuckDBPyConnection,
+    *,
+    table: str,
+    create_sql: str,
+) -> None:
+    tmp = f"{table}_nofk"
+    conn.execute(create_sql)
+    conn.execute(f"INSERT INTO {tmp} SELECT * FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
+
+
+def _ensure_market_child_tables_without_fk(conn: duckdb.DuckDBPyConnection) -> None:
+    """Rebuild market child tables without FKs so instrument enrichment can UPDATE.
+
+    DuckDB rejects UPDATEs to parent rows that are referenced by foreign keys.
+    Referential integrity for these tables is enforced in application code.
+    """
+    tables = {str(r[0]) for r in conn.execute("SHOW TABLES").fetchall()}
+    if "market_symbol_mappings" in tables and _table_has_fk_to_instruments(
+        conn, "market_symbol_mappings"
+    ):
+        _rebuild_table_without_fk(
+            conn,
+            table="market_symbol_mappings",
+            create_sql="""
+            CREATE TABLE market_symbol_mappings_nofk (
+                mapping_id VARCHAR PRIMARY KEY,
+                instrument_id VARCHAR NOT NULL,
+                provider VARCHAR NOT NULL,
+                provider_symbol VARCHAR NOT NULL,
+                valid_from DATE,
+                valid_to DATE,
+                is_primary BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ NOT NULL
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_market_mappings_instrument
+            ON market_symbol_mappings(instrument_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_market_mappings_provider_symbol
+            ON market_symbol_mappings(provider, provider_symbol)
+            """
+        )
+    if "daily_price_bars" in tables and _table_has_fk_to_instruments(conn, "daily_price_bars"):
+        _rebuild_table_without_fk(
+            conn,
+            table="daily_price_bars",
+            create_sql="""
+            CREATE TABLE daily_price_bars_nofk (
+                instrument_id VARCHAR NOT NULL,
+                provider VARCHAR NOT NULL,
+                trading_date DATE NOT NULL,
+                adjustment_mode VARCHAR NOT NULL,
+                open DECIMAL(18, 6) NOT NULL,
+                high DECIMAL(18, 6) NOT NULL,
+                low DECIMAL(18, 6) NOT NULL,
+                close DECIMAL(18, 6) NOT NULL,
+                volume BIGINT NOT NULL,
+                currency VARCHAR NOT NULL DEFAULT 'USD',
+                exchange_timezone VARCHAR NOT NULL DEFAULT 'America/New_York',
+                available_at TIMESTAMPTZ NOT NULL,
+                fetched_at TIMESTAMPTZ NOT NULL,
+                source_metadata_json VARCHAR,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (instrument_id, provider, trading_date, adjustment_mode)
+            )
+            """,
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_price_bars(trading_date)"
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_daily_bars_available_at
+            ON daily_price_bars(available_at)
+            """
+        )
+    if "market_data_runs" in tables and _table_has_fk_to_instruments(conn, "market_data_runs"):
+        _rebuild_table_without_fk(
+            conn,
+            table="market_data_runs",
+            create_sql="""
+            CREATE TABLE market_data_runs_nofk (
+                run_id VARCHAR PRIMARY KEY,
+                provider VARCHAR NOT NULL,
+                instrument_id VARCHAR NOT NULL,
+                requested_start_date DATE NOT NULL,
+                requested_end_date DATE NOT NULL,
+                adjustment_modes_json VARCHAR NOT NULL,
+                started_at TIMESTAMPTZ NOT NULL,
+                completed_at TIMESTAMPTZ,
+                status VARCHAR NOT NULL,
+                raw_row_count INTEGER NOT NULL DEFAULT 0,
+                inserted_row_count INTEGER NOT NULL DEFAULT 0,
+                updated_row_count INTEGER NOT NULL DEFAULT 0,
+                unchanged_row_count INTEGER NOT NULL DEFAULT 0,
+                rejected_row_count INTEGER NOT NULL DEFAULT 0,
+                error_summary VARCHAR,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_market_data_runs_instrument
+            ON market_data_runs(instrument_id)
+            """
+        )
 
 
 def initialize_database(path: Path) -> Database:

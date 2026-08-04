@@ -158,6 +158,8 @@ def test_multi_window_overlap_dedup_and_empty_middle(
     assert dates == sorted(set(dates))
     assert date(2020, 1, 1) in dates
     assert date(2023, 6, 1) in dates
+    assert result.incomplete is True
+    assert result.meta.get("incomplete_interior_windows")
 
 
 def test_long_range_windows_terminate() -> None:
@@ -739,9 +741,17 @@ def test_run_count_reconciliation(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             end_date=date(2023, 1, 10),
             modes=[PriceAdjustmentMode.NONE],
         )
-    assert result.raw_row_count == result.inserted_row_count + result.rejected_row_count
+    assert (
+        result.raw_row_count
+        == result.inserted_row_count
+        + result.updated_row_count
+        + result.unchanged_row_count
+        + result.rejected_row_count
+    )
     assert result.rejected_row_count >= 1
     assert result.inserted_row_count == 2
+    # rejected rows => partial even when the mode completed
+    assert result.status.value == "partial"
 
 
 def test_series_multi_year_modest_perf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

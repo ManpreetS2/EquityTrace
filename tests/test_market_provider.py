@@ -106,34 +106,71 @@ def test_descending_normalized(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert [b.trading_date for b in raw.bars] == [date(2023, 1, 3), date(2023, 1, 4)]
 
 
-def test_duplicate_dates_keep_last(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    payload = _ok_payload()
-    payload["values"] = [
-        {
-            "datetime": "2023-01-03",
-            "open": "1",
-            "high": "2",
-            "low": "1",
-            "close": "1.5",
-            "volume": "10",
-        },
-        {
-            "datetime": "2023-01-03",
-            "open": "10",
-            "high": "20",
-            "low": "10",
-            "close": "15",
-            "volume": "99",
-        },
-    ]
+def test_duplicate_dates_identical_and_conflicting(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identical = {
+        "meta": {"currency": "USD", "exchange_timezone": "America/New_York"},
+        "status": "ok",
+        "values": [
+            {
+                "datetime": "2023-01-03",
+                "open": "10",
+                "high": "20",
+                "low": "10",
+                "close": "15",
+                "volume": "99",
+            },
+            {
+                "datetime": "2023-01-03",
+                "open": "10",
+                "high": "20",
+                "low": "10",
+                "close": "15",
+                "volume": "99",
+            },
+        ],
+    }
     settings = _settings(tmp_path, monkeypatch)
-    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=payload))
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=identical))
     with TwelveDataProvider(settings, transport=transport) as provider:
         raw = provider.fetch_daily_bars(
             "AAPL", date(2023, 1, 1), date(2023, 1, 10), PriceAdjustmentMode.NONE
         )
     assert len(raw.bars) == 1
     assert raw.bars[0].close == Decimal("15")
+    assert raw.duplicate_row_count == 1
+
+    conflicting = {
+        "meta": {"currency": "USD", "exchange_timezone": "America/New_York"},
+        "status": "ok",
+        "values": [
+            {
+                "datetime": "2023-01-03",
+                "open": "1",
+                "high": "2",
+                "low": "1",
+                "close": "1.5",
+                "volume": "10",
+            },
+            {
+                "datetime": "2023-01-03",
+                "open": "10",
+                "high": "20",
+                "low": "10",
+                "close": "15",
+                "volume": "99",
+            },
+        ],
+    }
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=conflicting))
+    with (
+        TwelveDataProvider(settings, transport=transport) as provider,
+        pytest.raises(MarketDataEmptyError),
+    ):
+        provider.fetch_daily_bars(
+            "AAPL", date(2023, 1, 1), date(2023, 1, 10), PriceAdjustmentMode.NONE
+        )
 
 
 def test_invalid_api_key(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

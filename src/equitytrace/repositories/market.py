@@ -53,7 +53,12 @@ class MarketRepository:
         symbol = canonical_symbol.strip().upper()
         existing = self.get_instrument_by_symbol(symbol)
         if existing is not None:
-            return existing
+            return self.enrich_instrument(
+                existing,
+                security_ticker=security_ticker,
+                issuer_cik=issuer_cik,
+                exchange=exchange,
+            )
 
         instrument = MarketInstrument(
             instrument_id=make_instrument_id(symbol),
@@ -94,6 +99,69 @@ class MarketRepository:
         if stored is None:
             raise RuntimeError(f"Failed to persist instrument {symbol}")
         return stored
+
+    def enrich_instrument(
+        self,
+        instrument: MarketInstrument,
+        *,
+        security_ticker: str | None = None,
+        issuer_cik: str | None = None,
+        exchange: str | None = None,
+    ) -> MarketInstrument:
+        """Fill null identity fields from trusted SEC data; never overwrite conflicts."""
+
+        def _norm(value: str | None) -> str | None:
+            if value is None:
+                return None
+            text = value.strip()
+            return text or None
+
+        new_ticker = _norm(security_ticker)
+        new_cik = _norm(issuer_cik)
+        new_exchange = _norm(exchange)
+
+        if instrument.issuer_cik and new_cik and instrument.issuer_cik != new_cik:
+            raise ValueError(
+                f"Instrument {instrument.canonical_symbol} is linked to CIK "
+                f"{instrument.issuer_cik}, cannot enrich with {new_cik}."
+            )
+        if instrument.security_ticker and new_ticker and instrument.security_ticker != new_ticker:
+            raise ValueError(
+                f"Instrument {instrument.canonical_symbol} is linked to security "
+                f"{instrument.security_ticker}, cannot enrich with {new_ticker}."
+            )
+        if instrument.exchange and new_exchange and instrument.exchange != new_exchange:
+            raise ValueError(
+                f"Instrument {instrument.canonical_symbol} is linked to exchange "
+                f"{instrument.exchange}, cannot enrich with {new_exchange}."
+            )
+
+        next_ticker = instrument.security_ticker or new_ticker
+        next_cik = instrument.issuer_cik or new_cik
+        next_exchange = instrument.exchange or new_exchange
+        if (
+            next_ticker == instrument.security_ticker
+            and next_cik == instrument.issuer_cik
+            and next_exchange == instrument.exchange
+        ):
+            return instrument
+
+        now = _utc_now()
+        self._conn.execute(
+            """
+            UPDATE market_instruments SET
+                security_ticker = ?,
+                issuer_cik = ?,
+                exchange = ?,
+                updated_at = ?
+            WHERE instrument_id = ?
+            """,
+            [next_ticker, next_cik, next_exchange, now, instrument.instrument_id],
+        )
+        refreshed = self.get_instrument(instrument.instrument_id)
+        if refreshed is None:
+            raise RuntimeError(f"Failed to refresh instrument {instrument.instrument_id}")
+        return refreshed
 
     def get_instrument_by_symbol(self, canonical_symbol: str) -> MarketInstrument | None:
         row = self._conn.execute(
@@ -139,9 +207,10 @@ class MarketRepository:
         """Insert or update a provider mapping, allowing historical symbol reuse.
 
         Uniqueness is ``mapping_id`` (derived from provider, symbol, instrument,
-        and valid_from). A provider_symbol may map to different instruments in
-        non-overlapping validity windows. Overlapping active primary mappings
-        for the same provider_symbol raise ``ValueError``.
+        and valid_from). Overlapping primary mappings for the same
+        instrument/provider (including same-instrument rows) are rejected.
+        A provider_symbol may map to different instruments only in
+        non-overlapping validity windows.
         """
         now = _utc_now()
         mapping_id = mapping.mapping_id or make_mapping_id(
@@ -150,7 +219,7 @@ class MarketRepository:
             mapping.instrument_id,
             valid_from=mapping.valid_from,
         )
-        self._assert_no_overlapping_provider_symbol(mapping, mapping_id=mapping_id)
+        self._assert_mapping_invariants(mapping, mapping_id=mapping_id)
         self._conn.execute(
             """
             INSERT INTO market_symbol_mappings (
@@ -178,15 +247,50 @@ class MarketRepository:
         )
         return mapping.model_copy(update={"mapping_id": mapping_id, "updated_at": now})
 
-    def _assert_no_overlapping_provider_symbol(
+    def list_primary_mappings(
+        self,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+    ) -> list[MarketSymbolMapping]:
+        rows = self._conn.execute(
+            """
+            SELECT mapping_id, instrument_id, provider, provider_symbol, valid_from, valid_to,
+                   is_primary, created_at, updated_at
+            FROM market_symbol_mappings
+            WHERE instrument_id = ?
+              AND provider = ?
+              AND is_primary = TRUE
+            ORDER BY valid_from ASC NULLS FIRST, provider_symbol
+            """,
+            [instrument_id, provider.value],
+        ).fetchall()
+        return [_row_to_mapping(row) for row in rows]
+
+    def mappings_covering_range(
+        self,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> list[MarketSymbolMapping]:
+        """Return primary mappings whose validity overlaps ``[start_date, end_date]``."""
+        out: list[MarketSymbolMapping] = []
+        for mapping in self.list_primary_mappings(instrument_id, provider):
+            if _intervals_overlap(mapping.valid_from, mapping.valid_to, start_date, end_date):
+                out.append(mapping)
+        return out
+
+    def _assert_mapping_invariants(
         self,
         mapping: MarketSymbolMapping,
         *,
         mapping_id: str,
     ) -> None:
+        # Provider-symbol reuse across instruments must be non-overlapping.
         rows = self._conn.execute(
             """
-            SELECT mapping_id, instrument_id, valid_from, valid_to
+            SELECT mapping_id, instrument_id, provider_symbol, valid_from, valid_to, is_primary
             FROM market_symbol_mappings
             WHERE provider = ?
               AND provider_symbol = ?
@@ -195,18 +299,35 @@ class MarketRepository:
             [mapping.provider.value, mapping.provider_symbol, mapping_id],
         ).fetchall()
         for row in rows:
-            if row[1] == mapping.instrument_id:
-                continue
-            if _intervals_overlap(
-                mapping.valid_from,
-                mapping.valid_to,
-                row[2],
-                row[3],
-            ):
+            if _intervals_overlap(mapping.valid_from, mapping.valid_to, row[3], row[4]):
                 raise ValueError(
                     f"Overlapping provider mapping for {mapping.provider.value}/"
                     f"{mapping.provider_symbol} between instruments "
                     f"{mapping.instrument_id} and {row[1]}"
+                )
+
+        if not mapping.is_primary:
+            return
+
+        # Same instrument/provider: no overlapping primary mappings, including
+        # two open-ended primary mappings or two different active symbols.
+        peers = self._conn.execute(
+            """
+            SELECT mapping_id, provider_symbol, valid_from, valid_to
+            FROM market_symbol_mappings
+            WHERE instrument_id = ?
+              AND provider = ?
+              AND is_primary = TRUE
+              AND mapping_id <> ?
+            """,
+            [mapping.instrument_id, mapping.provider.value, mapping_id],
+        ).fetchall()
+        for row in peers:
+            if _intervals_overlap(mapping.valid_from, mapping.valid_to, row[2], row[3]):
+                raise ValueError(
+                    f"Overlapping primary mappings for instrument {mapping.instrument_id} "
+                    f"provider {mapping.provider.value}: "
+                    f"{mapping.provider_symbol!r} vs {row[1]!r}"
                 )
 
     def get_active_symbol_mapping(
@@ -238,6 +359,7 @@ class MarketRepository:
         return _row_to_mapping(row) if row else None
 
     def upsert_price_bars(self, bars: list[DailyPriceBar]) -> UpsertCounts:
+        """Persist bars. Caller may wrap in BEGIN/COMMIT for atomic mode writes."""
         counts = UpsertCounts()
         if not bars:
             return counts
@@ -337,6 +459,17 @@ class MarketRepository:
             )
             counts.updated += 1
         return counts
+
+    def upsert_price_bars_atomic(self, bars: list[DailyPriceBar]) -> UpsertCounts:
+        """Upsert bars in a single transaction; roll back the mode on failure."""
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            counts = self.upsert_price_bars(bars)
+            self._conn.execute("COMMIT")
+            return counts
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
 
     def get_price_bars(
         self,

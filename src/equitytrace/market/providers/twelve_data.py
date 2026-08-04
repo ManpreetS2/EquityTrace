@@ -180,10 +180,14 @@ class TwelveDataProvider:
         windows = date_windows(start_date, end_date, _WINDOW_DAYS)
         merged: dict[date, ProviderBar] = {}
         meta: dict[str, Any] = {"windows_requested": len(windows)}
-        currency = "USD"
-        exchange_timezone = "America/New_York"
+        currency: str | None = None
+        exchange_timezone: str | None = None
         malformed_total = 0
         duplicate_total = 0
+        duplicate_row_total = 0
+        conflicting_dates: set[date] = set()
+        window_populated: list[bool] = []
+        incomplete_interior: list[dict[str, str]] = []
 
         for window_start, window_end in windows:
             response = self._fetch_window(
@@ -192,16 +196,30 @@ class TwelveDataProvider:
                 end_date=window_end,
                 adjustment_mode=adjustment_mode,
             )
-            currency = response.currency or currency
-            exchange_timezone = response.exchange_timezone or exchange_timezone
+            populated = bool(response.bars)
+            window_populated.append(populated)
             meta.update({k: v for k, v in response.meta.items() if k != "windows_requested"})
             malformed_total += response.malformed_row_count
             duplicate_total += response.duplicate_date_count
+            duplicate_row_total += response.duplicate_row_count
+            conflicting_dates.update(response.conflicting_duplicate_dates)
 
-            # Calendar windows advance independently of returned earliest dates.
-            # A window whose earliest bar is after window_start usually just means
-            # non-trading days at the start of the window — not truncation.
-            if response.bars:
+            if populated:
+                if currency is None:
+                    currency = response.currency
+                    exchange_timezone = response.exchange_timezone
+                else:
+                    if response.currency != currency:
+                        raise MarketDataValidationError(
+                            f"Twelve Data currency changed across windows for {symbol}: "
+                            f"{currency} → {response.currency}."
+                        )
+                    if response.exchange_timezone != exchange_timezone:
+                        raise MarketDataValidationError(
+                            f"Twelve Data exchange timezone changed across windows for "
+                            f"{symbol}: {exchange_timezone} → {response.exchange_timezone}."
+                        )
+
                 earliest = response.bars[0].trading_date
                 latest = response.bars[-1].trading_date
                 if earliest > window_start:
@@ -218,13 +236,40 @@ class TwelveDataProvider:
                 if start_date <= bar.trading_date <= end_date:
                     merged[bar.trading_date] = bar
 
+        # Empty interior windows between populated windows are incomplete.
+        if any(window_populated):
+            first_pop = next(i for i, p in enumerate(window_populated) if p)
+            last_pop = (
+                len(window_populated)
+                - 1
+                - next(i for i, p in enumerate(reversed(window_populated)) if p)
+            )
+            for idx in range(first_pop + 1, last_pop):
+                if not window_populated[idx]:
+                    w_start, w_end = windows[idx]
+                    incomplete_interior.append(
+                        {
+                            "window_start": w_start.isoformat(),
+                            "window_end": w_end.isoformat(),
+                        }
+                    )
+
         bars = tuple(merged[d] for d in sorted(merged))
         if not bars:
             raise MarketDataEmptyError(
                 f"No daily bars returned for {symbol} between {start_date} and {end_date}."
             )
+        if currency is None or exchange_timezone is None:
+            raise MarketDataValidationError(
+                f"Twelve Data returned bars for {symbol} without trustworthy currency/timezone."
+            )
+
+        incomplete = bool(incomplete_interior)
+        if incomplete_interior:
+            meta["incomplete_interior_windows"] = incomplete_interior
         meta["malformed_row_count"] = malformed_total
         meta["duplicate_date_count"] = duplicate_total
+        meta["duplicate_row_count"] = duplicate_row_total
         return DailyBarsResponse(
             provider=MarketDataProviderName.TWELVE_DATA,
             provider_symbol=symbol,
@@ -235,6 +280,9 @@ class TwelveDataProvider:
             meta=meta,
             malformed_row_count=malformed_total,
             duplicate_date_count=duplicate_total,
+            duplicate_row_count=duplicate_row_total,
+            conflicting_duplicate_dates=tuple(sorted(conflicting_dates)),
+            incomplete=incomplete,
         )
 
     def _fetch_window(
@@ -362,14 +410,32 @@ class TwelveDataProvider:
 
         meta_obj = payload.get("meta")
         meta: dict[str, Any] = meta_obj if isinstance(meta_obj, dict) else {}
-        currency = str(meta.get("currency") or "USD")
-        exchange_timezone = str(
-            meta.get("exchange_timezone") or meta.get("timezone") or "America/New_York"
-        )
+
+        # Empty windows are allowed (pre-listing / holidays / interior incompleteness).
+        # Metadata is required only when bars are present so we never stamp defaults.
+        if not values:
+            return DailyBarsResponse(
+                provider=MarketDataProviderName.TWELVE_DATA,
+                provider_symbol=symbol,
+                adjustment_mode=adjustment_mode,
+                currency="",
+                exchange_timezone="",
+                bars=(),
+                meta={k: v for k, v in meta.items() if "key" not in str(k).lower()},
+                malformed_row_count=0,
+                duplicate_date_count=0,
+                duplicate_row_count=0,
+                conflicting_duplicate_dates=(),
+                incomplete=False,
+            )
+
+        currency, exchange_timezone = require_provider_meta(meta)
 
         by_date: dict[date, ProviderBar] = {}
         malformed = 0
-        duplicates = 0
+        duplicate_dates = 0
+        duplicate_rows = 0
+        conflicting: set[date] = set()
         for raw in values:
             if not isinstance(raw, dict):
                 malformed += 1
@@ -383,9 +449,23 @@ class TwelveDataProvider:
             except MarketDataValidationError:
                 malformed += 1
                 continue
-            if bar.trading_date in by_date:
-                duplicates += 1
-            by_date[bar.trading_date] = bar
+            if bar.trading_date in conflicting:
+                duplicate_rows += 1
+                duplicate_dates += 1
+                continue
+            existing = by_date.get(bar.trading_date)
+            if existing is None:
+                by_date[bar.trading_date] = bar
+                continue
+            duplicate_dates += 1
+            duplicate_rows += 1
+            if _provider_bars_identical(existing, bar):
+                # Identical duplicate: keep the first, reject the extra.
+                continue
+            # Conflicting duplicate: reject the trading date entirely.
+            del by_date[bar.trading_date]
+            conflicting.add(bar.trading_date)
+            duplicate_rows += 1  # also reject the previously accepted row
 
         bars = tuple(by_date[d] for d in sorted(by_date))
         return DailyBarsResponse(
@@ -397,7 +477,10 @@ class TwelveDataProvider:
             bars=bars,
             meta={k: v for k, v in meta.items() if "key" not in str(k).lower()},
             malformed_row_count=malformed,
-            duplicate_date_count=duplicates,
+            duplicate_date_count=duplicate_dates,
+            duplicate_row_count=duplicate_rows,
+            conflicting_duplicate_dates=tuple(sorted(conflicting)),
+            incomplete=False,
         )
 
     def _cache_path(self, params: dict[str, str]) -> Path:
@@ -514,6 +597,49 @@ def _is_cacheable_success(payload: dict[str, Any]) -> bool:
         return False
     values = payload.get("values")
     return isinstance(values, list)
+
+
+def require_provider_meta(meta: dict[str, Any]) -> tuple[str, str]:
+    """Require trustworthy currency and exchange timezone from provider meta."""
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    if "currency" not in meta or meta.get("currency") is None:
+        raise MarketDataValidationError("Twelve Data response missing currency metadata.")
+    currency = str(meta.get("currency")).strip()
+    if not currency:
+        raise MarketDataValidationError("Twelve Data response has blank currency metadata.")
+
+    tz_raw = meta.get("exchange_timezone")
+    if tz_raw is None or (isinstance(tz_raw, str) and not str(tz_raw).strip()):
+        tz_raw = meta.get("timezone")
+    if tz_raw is None:
+        raise MarketDataValidationError(
+            "Twelve Data response missing exchange_timezone/timezone metadata."
+        )
+    exchange_timezone = str(tz_raw).strip()
+    if not exchange_timezone:
+        raise MarketDataValidationError(
+            "Twelve Data response has blank exchange timezone metadata."
+        )
+    try:
+        ZoneInfo(exchange_timezone)
+    except ZoneInfoNotFoundError as exc:
+        raise MarketDataValidationError(
+            f"Twelve Data returned unknown exchange timezone '{exchange_timezone}'."
+        ) from exc
+    return currency, exchange_timezone
+
+
+def _provider_bars_identical(left: ProviderBar, right: ProviderBar) -> bool:
+    return (
+        left.open == right.open
+        and left.high == right.high
+        and left.low == right.low
+        and left.close == right.close
+        and left.volume == right.volume
+        and left.currency == right.currency
+        and left.exchange_timezone == right.exchange_timezone
+    )
 
 
 def parse_bar(
