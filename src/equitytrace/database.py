@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS market_instruments (
     mic_code VARCHAR,
     currency VARCHAR NOT NULL DEFAULT 'USD',
     exchange_timezone VARCHAR NOT NULL DEFAULT 'America/New_York',
+    -- False until a trusted provider response confirms currency/timezone.
+    -- Creation defaults (USD / America/New_York) are placeholders until then.
+    market_metadata_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
     active BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL
@@ -271,6 +274,7 @@ class Database:
             conn.execute(SCHEMA_SQL)
             _ensure_market_symbol_mapping_schema(conn)
             _ensure_market_child_tables_without_fk(conn)
+            _ensure_market_instrument_metadata_confirmed(conn)
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, notes)
@@ -313,7 +317,41 @@ class Database:
                     "Drop market child FKs to allow instrument enrichment under DuckDB",
                 ],
             )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "0.3.0-a2",
+                    "Confirm instrument market metadata separately from creation defaults",
+                ],
+            )
         logger.info("Initialized DuckDB schema at %s", self.path)
+
+
+def _ensure_market_instrument_metadata_confirmed(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add market_metadata_confirmed when upgrading pre-0.3.0-a2 schemas."""
+    tables = {str(r[0]) for r in conn.execute("SHOW TABLES").fetchall()}
+    if "market_instruments" not in tables:
+        return
+    cols = _table_columns(conn, "market_instruments")
+    if "market_metadata_confirmed" in cols:
+        return
+    conn.execute(
+        """
+        ALTER TABLE market_instruments
+        ADD COLUMN market_metadata_confirmed BOOLEAN DEFAULT FALSE
+        """
+    )
+    conn.execute(
+        """
+        UPDATE market_instruments
+        SET market_metadata_confirmed = FALSE
+        WHERE market_metadata_confirmed IS NULL
+        """
+    )
 
 
 def _table_columns(conn: duckdb.DuckDBPyConnection, table: str) -> set[str]:

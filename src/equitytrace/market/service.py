@@ -67,9 +67,52 @@ class MarketDataService:
             raise MarketDataError("overlap_days must be >= 0.")
 
         modes = modes or [PriceAdjustmentMode.NONE, PriceAdjustmentMode.ALL]
-        provider, owns_provider = self._resolve_provider(provider_name)
-        provider_enum = MarketDataProviderName(provider.name)
 
+        provider_enum_name = (
+            (provider_name.value if provider_name else self._settings.market_data_provider)
+            .strip()
+            .lower()
+        )
+        try:
+            provider_enum = MarketDataProviderName(provider_enum_name)
+        except ValueError as exc:
+            raise MarketDataError(
+                f"Unsupported market-data provider '{provider_enum_name}'. "
+                f"v0.3a supports '{MarketDataProviderName.TWELVE_DATA.value}'."
+            ) from exc
+
+        # Construct the provider before identity/mapping/run work so every later
+        # exit path can close an internally owned client.
+        provider, owns_provider = self._resolve_provider(provider_name)
+        try:
+            return self._ingest_with_provider(
+                provider=provider,
+                provider_enum=provider_enum,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                asset_type=asset_type,
+                provider_symbol=provider_symbol,
+                modes=modes,
+                overlap_days=overlap_days,
+            )
+        finally:
+            if owns_provider:
+                self._close_owned_provider(provider)
+
+    def _ingest_with_provider(
+        self,
+        *,
+        provider: MarketDataProvider,
+        provider_enum: MarketDataProviderName,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+        asset_type: AssetType,
+        provider_symbol: str | None,
+        modes: list[PriceAdjustmentMode],
+        overlap_days: int,
+    ) -> MarketDataIngestionResult:
         security_ticker: str | None = None
         issuer_cik: str | None = None
         exchange: str | None = None
@@ -124,101 +167,105 @@ class MarketDataService:
         }
         warnings: list[str] = []
         error_parts: list[str] = []
-        modes_succeeded = 0
         modes_with_committed_rows = 0
+        modes_clean = 0
         any_incomplete = False
         any_rejected = False
         today = utc_now().date()
 
-        try:
-            for mode in modes:
+        for mode in modes:
+            try:
+                fetch_start = start_date
+                stored_start, stored_end = self._repo.get_stored_date_range(
+                    instrument.instrument_id,
+                    adjustment_mode=mode,
+                    provider=provider_enum,
+                )
+                if stored_end is not None and start_date <= stored_end:
+                    fetch_start = max(
+                        start_date,
+                        stored_end - timedelta(days=overlap_days),
+                    )
+                    if start_date < (stored_start or start_date):
+                        fetch_start = start_date
+
+                # Network I/O happens outside any DB transaction.
+                response = provider.fetch_daily_bars(
+                    resolved_provider_symbol,
+                    fetch_start,
+                    end_date,
+                    mode,
+                )
                 try:
-                    fetch_start = start_date
-                    stored_start, stored_end = self._repo.get_stored_date_range(
+                    instrument = self._repo.update_market_metadata(
                         instrument.instrument_id,
-                        adjustment_mode=mode,
-                        provider=provider_enum,
+                        currency=response.currency,
+                        exchange_timezone=response.exchange_timezone,
                     )
-                    if stored_end is not None and start_date <= stored_end:
-                        fetch_start = max(
-                            start_date,
-                            stored_end - timedelta(days=overlap_days),
-                        )
-                        if start_date < (stored_start or start_date):
-                            fetch_start = start_date
+                except ValueError as exc:
+                    raise MarketDataError(str(exc)) from exc
 
-                    # Network I/O happens outside any DB transaction.
-                    response = provider.fetch_daily_bars(
-                        resolved_provider_symbol,
-                        fetch_start,
-                        end_date,
-                        mode,
-                    )
-                    mode_raw, mode_rejected, bars = self._prepare_bars(
-                        response=response,
-                        instrument_id=instrument.instrument_id,
-                        provider_enum=provider_enum,
-                        mode=mode,
-                        today=today,
-                    )
-                    totals["raw"] += mode_raw
-                    totals["rejected"] += mode_rejected
-                    if mode_rejected:
-                        any_rejected = True
-                    if response.incomplete:
-                        any_incomplete = True
-                        warnings.append(
-                            "incomplete_interior_windows:"
-                            + ",".join(
-                                f"{w['window_start']}..{w['window_end']}"
-                                for w in response.meta.get("incomplete_interior_windows", [])
-                            )
+                mode_raw, mode_rejected, bars = self._prepare_bars(
+                    response=response,
+                    instrument_id=instrument.instrument_id,
+                    provider_enum=provider_enum,
+                    mode=mode,
+                    today=today,
+                )
+                totals["raw"] += mode_raw
+                totals["rejected"] += mode_rejected
+                if mode_rejected:
+                    any_rejected = True
+                if response.incomplete:
+                    any_incomplete = True
+                    warnings.append(
+                        "incomplete_interior_windows:"
+                        + ",".join(
+                            f"{w['window_start']}..{w['window_end']}"
+                            for w in response.meta.get("incomplete_interior_windows", [])
                         )
-                    if response.conflicting_duplicate_dates:
-                        warnings.append(
-                            "conflicting_duplicate_dates:"
-                            + ",".join(d.isoformat() for d in response.conflicting_duplicate_dates)
-                        )
+                    )
+                if response.conflicting_duplicate_dates:
+                    warnings.append(
+                        "conflicting_duplicate_dates:"
+                        + ",".join(d.isoformat() for d in response.conflicting_duplicate_dates)
+                    )
 
-                    counts = self._repo.upsert_price_bars_atomic(bars)
-                    totals["inserted"] += counts.inserted
-                    totals["updated"] += counts.updated
-                    totals["unchanged"] += counts.unchanged
-                    modes_succeeded += 1
-                    if counts.inserted + counts.updated + counts.unchanged > 0:
-                        modes_with_committed_rows += 1
-                    if mode is PriceAdjustmentMode.ALL:
-                        warnings.append(
-                            "adjusted_series_provider_reconstructed:"
-                            "adjustment_mode=all may be revised by the provider "
-                            "when corporate-action history changes; "
-                            "not a vendor-vintage archive"
-                        )
-                except MarketDataError as exc:
-                    error_parts.append(f"{mode.value}:{exc}")
-                    logger.info(
-                        "Market ingest mode %s failed for %s: %s",
-                        mode.value,
-                        symbol,
-                        exc,
+                counts = self._repo.upsert_price_bars_atomic(bars)
+                totals["inserted"] += counts.inserted
+                totals["updated"] += counts.updated
+                totals["unchanged"] += counts.unchanged
+                committed = counts.inserted + counts.updated + counts.unchanged
+                if committed > 0:
+                    modes_with_committed_rows += 1
+                    if mode_rejected == 0 and not response.incomplete:
+                        modes_clean += 1
+                if mode is PriceAdjustmentMode.ALL:
+                    warnings.append(
+                        "adjusted_series_provider_reconstructed:"
+                        "adjustment_mode=all may be revised by the provider "
+                        "when corporate-action history changes; "
+                        "not a vendor-vintage archive"
                     )
-                except Exception as exc:
-                    error_parts.append(f"{mode.value}:{type(exc).__name__}")
-                    logger.exception(
-                        "Unexpected market ingest failure for %s mode %s",
-                        symbol,
-                        mode.value,
-                    )
-        finally:
-            if owns_provider:
-                close = getattr(provider, "close", None)
-                if callable(close):
-                    with contextlib.suppress(Exception):
-                        close()
+            except MarketDataError as exc:
+                error_parts.append(f"{mode.value}:{exc}")
+                logger.info(
+                    "Market ingest mode %s failed for %s: %s",
+                    mode.value,
+                    symbol,
+                    exc,
+                )
+            except Exception:
+                error_parts.append(f"{mode.value}:UnexpectedError")
+                logger.exception(
+                    "Unexpected market ingest failure for %s mode %s",
+                    symbol,
+                    mode.value,
+                )
 
         status = _finalize_status(
             modes_requested=len(modes),
-            modes_succeeded=modes_succeeded,
+            modes_clean=modes_clean,
             modes_with_committed_rows=modes_with_committed_rows,
             any_rejected=any_rejected,
             any_incomplete=any_incomplete,
@@ -336,26 +383,6 @@ class MarketDataService:
         end_date: date,
         explicit_provider_symbol: str | None,
     ) -> str:
-        covering = self._repo.mappings_covering_range(
-            instrument_id,
-            provider,
-            start_date=start_date,
-            end_date=end_date,
-        )
-        symbols = {m.provider_symbol for m in covering}
-        if len(symbols) > 1:
-            details = ", ".join(
-                sorted(
-                    f"{m.provider_symbol}[{m.valid_from or 'open'}..{m.valid_to or 'open'}]"
-                    for m in covering
-                )
-            )
-            raise MarketDataError(
-                f"Requested range {start_date}..{end_date} spans multiple provider "
-                f"symbol mappings for {canonical_symbol}: {details}. "
-                "Ingest each validity range separately."
-            )
-
         if explicit_provider_symbol is not None:
             explicit = explicit_provider_symbol.strip()
             if not explicit:
@@ -379,24 +406,103 @@ class MarketDataService:
                     )
                 except ValueError as exc:
                     raise MarketDataError(str(exc)) from exc
+            # Explicit open-ended (or existing) mapping must still fully cover the range.
+            self._require_complete_mapping_coverage(
+                instrument_id=instrument_id,
+                provider=provider,
+                canonical_symbol=canonical_symbol,
+                start_date=start_date,
+                end_date=end_date,
+            )
             return explicit
 
-        if covering:
-            return covering[0].provider_symbol
-
-        # No mapping yet: create open-ended mapping from canonical symbol.
-        try:
-            self._repo.upsert_symbol_mapping(
-                MarketSymbolMapping(
-                    instrument_id=instrument_id,
-                    provider=provider,
-                    provider_symbol=canonical_symbol,
-                    is_primary=True,
+        mappings = self._repo.list_primary_mappings(instrument_id, provider)
+        if not mappings:
+            try:
+                self._repo.upsert_symbol_mapping(
+                    MarketSymbolMapping(
+                        instrument_id=instrument_id,
+                        provider=provider,
+                        provider_symbol=canonical_symbol,
+                        is_primary=True,
+                    )
                 )
+            except ValueError as exc:
+                raise MarketDataError(str(exc)) from exc
+            return canonical_symbol
+
+        return self._require_complete_mapping_coverage(
+            instrument_id=instrument_id,
+            provider=provider,
+            canonical_symbol=canonical_symbol,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+    def _require_complete_mapping_coverage(
+        self,
+        *,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        canonical_symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> str:
+        """Ensure one provider symbol fully covers ``[start_date, end_date]`` with no gaps."""
+        mappings = self._repo.list_primary_mappings(instrument_id, provider)
+        if not mappings:
+            raise MarketDataError(
+                f"No provider symbol mapping covers {start_date}..{end_date} "
+                f"for {canonical_symbol}."
             )
-        except ValueError as exc:
-            raise MarketDataError(str(exc)) from exc
-        return canonical_symbol
+
+        def covers(m: MarketSymbolMapping, day: date) -> bool:
+            after_start = m.valid_from is None or day >= m.valid_from
+            before_end = m.valid_to is None or day <= m.valid_to
+            return after_start and before_end
+
+        start_hits = [m for m in mappings if covers(m, start_date)]
+        if not start_hits:
+            raise MarketDataError(
+                f"No provider symbol mapping covers requested start {start_date} "
+                f"for {canonical_symbol}. Ingest each validity range separately."
+            )
+        # Deterministic: latest valid_from wins when multiple claim start_date
+        # (should be prevented by overlap invariants, but stay defensive).
+        start_hits.sort(key=lambda m: (m.valid_from is None, m.valid_from or date.min))
+        active = start_hits[-1]
+        symbol = active.provider_symbol
+
+        cursor = start_date
+        while cursor <= end_date:
+            hits = [m for m in mappings if covers(m, cursor) and m.provider_symbol == symbol]
+            other = [m for m in mappings if covers(m, cursor) and m.provider_symbol != symbol]
+            if other:
+                details = ", ".join(
+                    sorted(
+                        f"{m.provider_symbol}[{m.valid_from or 'open'}..{m.valid_to or 'open'}]"
+                        for m in [*hits, *other]
+                    )
+                )
+                raise MarketDataError(
+                    f"Requested range {start_date}..{end_date} spans multiple provider "
+                    f"symbol mappings for {canonical_symbol}: {details}. "
+                    "Ingest each validity range separately."
+                )
+            if not hits:
+                raise MarketDataError(
+                    f"Provider symbol mapping gap at {cursor} for {canonical_symbol} "
+                    f"within requested range {start_date}..{end_date}. "
+                    "Ingest each validity range separately."
+                )
+            hits.sort(key=lambda m: (m.valid_from is None, m.valid_from or date.min))
+            current = hits[-1]
+            if current.valid_to is None or current.valid_to >= end_date:
+                return symbol
+            # Advance to the day after this mapping ends; next iteration must be covered
+            # by an adjacent same-symbol mapping with no gap.
+            cursor = current.valid_to + timedelta(days=1)
+        return symbol
 
     def _resolve_provider(
         self,
@@ -413,19 +519,29 @@ class MarketDataService:
             f"v0.3a supports '{MarketDataProviderName.TWELVE_DATA.value}'."
         )
 
+    @staticmethod
+    def _close_owned_provider(provider: MarketDataProvider) -> None:
+        """Close an owned provider without masking the primary exception."""
+        close = getattr(provider, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            logger.exception("Failed to close owned market-data provider")
+
 
 def _finalize_status(
     *,
     modes_requested: int,
-    modes_succeeded: int,
+    modes_clean: int,
     modes_with_committed_rows: int,
     any_rejected: bool,
     any_incomplete: bool,
 ) -> MarketDataRunStatus:
-    if modes_succeeded == 0:
+    """Derive run status from committed rows, not merely successful fetches."""
+    if modes_with_committed_rows == 0:
         return MarketDataRunStatus.FAILED
-    if modes_succeeded < modes_requested or any_rejected or any_incomplete:
-        if modes_with_committed_rows > 0 or modes_succeeded > 0:
-            return MarketDataRunStatus.PARTIAL
-        return MarketDataRunStatus.FAILED
-    return MarketDataRunStatus.SUCCESS
+    if modes_clean == modes_requested and not any_rejected and not any_incomplete:
+        return MarketDataRunStatus.SUCCESS
+    return MarketDataRunStatus.PARTIAL

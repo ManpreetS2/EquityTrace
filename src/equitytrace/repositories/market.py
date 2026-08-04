@@ -69,14 +69,16 @@ class MarketRepository:
             exchange=exchange,
             currency=currency,
             exchange_timezone=exchange_timezone,
+            market_metadata_confirmed=False,
         )
         now = _utc_now()
         self._conn.execute(
             """
             INSERT INTO market_instruments (
                 instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
-                exchange, mic_code, currency, exchange_timezone, active, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                exchange, mic_code, currency, exchange_timezone, market_metadata_confirmed,
+                active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (instrument_id) DO NOTHING
             """,
             [
@@ -89,6 +91,7 @@ class MarketRepository:
                 instrument.mic_code,
                 instrument.currency,
                 instrument.exchange_timezone,
+                instrument.market_metadata_confirmed,
                 instrument.active,
                 now,
                 now,
@@ -167,7 +170,8 @@ class MarketRepository:
         row = self._conn.execute(
             """
             SELECT instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
-                   exchange, mic_code, currency, exchange_timezone, active, created_at, updated_at
+                   exchange, mic_code, currency, exchange_timezone, market_metadata_confirmed,
+                   active, created_at, updated_at
             FROM market_instruments
             WHERE canonical_symbol = ?
             """,
@@ -179,13 +183,77 @@ class MarketRepository:
         row = self._conn.execute(
             """
             SELECT instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
-                   exchange, mic_code, currency, exchange_timezone, active, created_at, updated_at
+                   exchange, mic_code, currency, exchange_timezone, market_metadata_confirmed,
+                   active, created_at, updated_at
             FROM market_instruments
             WHERE instrument_id = ?
             """,
             [instrument_id],
         ).fetchone()
         return _row_to_instrument(row) if row else None
+
+    def update_market_metadata(
+        self,
+        instrument_id: str,
+        *,
+        currency: str,
+        exchange_timezone: str,
+    ) -> MarketInstrument:
+        """Fill or confirm currency/timezone from a trusted provider response.
+
+        Placeholder policy: until ``market_metadata_confirmed`` is true, the
+        creation defaults (USD / America/New_York) are placeholders and may be
+        replaced by the first trusted provider values. Once confirmed, later
+        responses must match exactly; conflicts raise rather than overwrite.
+        """
+        instrument = self.get_instrument(instrument_id)
+        if instrument is None:
+            raise ValueError(f"Unknown instrument_id {instrument_id!r}.")
+
+        currency_norm = currency.strip().upper()
+        tz_norm = exchange_timezone.strip()
+        if not currency_norm:
+            raise ValueError("currency must not be blank.")
+        if not tz_norm:
+            raise ValueError("exchange_timezone must not be blank.")
+
+        if instrument.market_metadata_confirmed:
+            if instrument.currency != currency_norm or instrument.exchange_timezone != tz_norm:
+                raise ValueError(
+                    f"Instrument {instrument.canonical_symbol} has confirmed market metadata "
+                    f"{instrument.currency}/{instrument.exchange_timezone}; "
+                    f"cannot overwrite with {currency_norm}/{tz_norm}."
+                )
+            return instrument
+
+        now = _utc_now()
+        self._conn.execute(
+            """
+            UPDATE market_instruments SET
+                currency = ?,
+                exchange_timezone = ?,
+                market_metadata_confirmed = TRUE,
+                updated_at = ?
+            WHERE instrument_id = ?
+            """,
+            [currency_norm, tz_norm, now, instrument_id],
+        )
+        refreshed = self.get_instrument(instrument_id)
+        if refreshed is None:
+            raise RuntimeError(f"Failed to refresh instrument {instrument_id}")
+        return refreshed
+
+    def _require_instrument_exists(self, instrument_id: str) -> None:
+        """Application-level FK: child rows must reference an existing instrument."""
+        row = self._conn.execute(
+            "SELECT 1 FROM market_instruments WHERE instrument_id = ? LIMIT 1",
+            [instrument_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"Referential integrity violation: instrument_id {instrument_id!r} "
+                "does not exist in market_instruments."
+            )
 
     def count_active_common_tickers_for_issuer(self, issuer_cik: str) -> int:
         """Count distinct equity securities linked to an issuer CIK.
@@ -219,6 +287,7 @@ class MarketRepository:
             mapping.instrument_id,
             valid_from=mapping.valid_from,
         )
+        self._require_instrument_exists(mapping.instrument_id)
         self._assert_mapping_invariants(mapping, mapping_id=mapping_id)
         self._conn.execute(
             """
@@ -363,6 +432,10 @@ class MarketRepository:
         counts = UpsertCounts()
         if not bars:
             return counts
+        # Enforce once per batch; all bars in a mode share one instrument_id.
+        instrument_ids = {bar.instrument_id for bar in bars}
+        for instrument_id in instrument_ids:
+            self._require_instrument_exists(instrument_id)
         now = _utc_now()
         for bar in bars:
             existing = self._conn.execute(
@@ -598,6 +671,7 @@ class MarketRepository:
     ) -> str:
         run_id = str(uuid.uuid4())
         now = _utc_now()
+        self._require_instrument_exists(instrument_id)
         self._conn.execute(
             """
             INSERT INTO market_data_runs (
@@ -691,9 +765,10 @@ def _row_to_instrument(row: tuple[object, ...]) -> MarketInstrument:
         mic_code=str(row[6]) if row[6] is not None else None,
         currency=str(row[7]),
         exchange_timezone=str(row[8]),
-        active=bool(row[9]),
-        created_at=_as_utc(row[10]),
-        updated_at=_as_utc(row[11]),
+        market_metadata_confirmed=bool(row[9]),
+        active=bool(row[10]),
+        created_at=_as_utc(row[11]),
+        updated_at=_as_utc(row[12]),
     )
 
 
