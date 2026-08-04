@@ -150,12 +150,15 @@ class DailyBarsResponse(BaseModel):
     provider: MarketDataProviderName
     provider_symbol: str
     adjustment_mode: PriceAdjustmentMode
-    currency: str = "USD"
-    exchange_timezone: str = "America/New_York"
+    currency: str
+    exchange_timezone: str
     bars: tuple[ProviderBar, ...] = ()
     meta: dict[str, Any] = Field(default_factory=dict)
     malformed_row_count: int = 0
     duplicate_date_count: int = 0
+    duplicate_row_count: int = 0
+    conflicting_duplicate_dates: tuple[date, ...] = ()
+    incomplete: bool = False
 
 
 class MarketDataIngestionResult(BaseModel):

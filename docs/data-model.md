@@ -77,7 +77,10 @@ EquityTrace downloaded the bar.
 `market_symbol_mappings` uses a surrogate `mapping_id` primary key so the same
 provider symbol can be reused by a different instrument after a prior mapping
 expires (`valid_from` / `valid_to`). Overlapping validity windows for the same
-provider symbol across instruments are rejected.
+provider symbol across instruments are rejected. Child market tables intentionally
+omit DuckDB foreign keys to `market_instruments` because DuckDB rejects parent-row
+`UPDATE`s while FK children exist; application code preserves referential use of
+`instrument_id`.
 
 `market_instruments.canonical_symbol` remains `UNIQUE` in v0.3a: one active
 display ticker per instrument. Historical ticker reuse across issuers is a
