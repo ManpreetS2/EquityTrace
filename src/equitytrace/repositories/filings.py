@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import duckdb
 
-from filingedge.models import Filing
+from equitytrace.models import Filing
 
 
 class FilingsRepository:
@@ -17,49 +17,67 @@ class FilingsRepository:
 
     def upsert_many(self, filings: list[Filing]) -> None:
         """Insert or update filings by accession number."""
+        if not filings:
+            return
         now = datetime.now(UTC)
-        for filing in filings:
-            self._conn.execute(
-                """
-                INSERT INTO filings (
-                    accession_number, cik, form, filing_date, report_date,
-                    acceptance_datetime, available_at, primary_document,
-                    file_number, film_number, is_xbrl, is_inline_xbrl,
-                    source_url, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (accession_number) DO UPDATE SET
-                    cik = excluded.cik,
-                    form = excluded.form,
-                    filing_date = excluded.filing_date,
-                    report_date = excluded.report_date,
-                    acceptance_datetime = excluded.acceptance_datetime,
-                    available_at = excluded.available_at,
-                    primary_document = excluded.primary_document,
-                    file_number = excluded.file_number,
-                    film_number = excluded.film_number,
-                    is_xbrl = excluded.is_xbrl,
-                    is_inline_xbrl = excluded.is_inline_xbrl,
-                    source_url = excluded.source_url,
-                    updated_at = excluded.updated_at
-                """,
-                [
-                    filing.accession_number,
-                    filing.cik,
-                    filing.form,
-                    filing.filing_date,
-                    filing.report_date,
-                    filing.acceptance_datetime,
-                    filing.available_at,
-                    filing.primary_document,
-                    filing.file_number,
-                    filing.film_number,
-                    filing.is_xbrl,
-                    filing.is_inline_xbrl,
-                    filing.source_url,
-                    now,
-                    now,
-                ],
-            )
+        rows: list[list[object]] = [
+            [
+                filing.accession_number,
+                filing.cik,
+                filing.form,
+                filing.filing_date,
+                filing.report_date,
+                filing.acceptance_datetime,
+                filing.available_at,
+                filing.primary_document,
+                filing.file_number,
+                filing.film_number,
+                filing.is_xbrl,
+                filing.is_inline_xbrl,
+                filing.source_url,
+                now,
+                now,
+            ]
+            for filing in filings
+        ]
+        ciks = {str(row[1]) for row in rows}
+        insert_sql = """
+            INSERT INTO filings (
+                accession_number, cik, form, filing_date, report_date,
+                acceptance_datetime, available_at, primary_document,
+                file_number, film_number, is_xbrl, is_inline_xbrl,
+                source_url, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        chunk_size = 500
+        if len(ciks) == 1:
+            cik = next(iter(ciks))
+            self._conn.execute("DELETE FROM filings WHERE cik = ?", [cik])
+            for start in range(0, len(rows), chunk_size):
+                self._conn.executemany(insert_sql, rows[start : start + chunk_size])
+            return
+
+        upsert_sql = (
+            insert_sql
+            + """
+            ON CONFLICT (accession_number) DO UPDATE SET
+                cik = excluded.cik,
+                form = excluded.form,
+                filing_date = excluded.filing_date,
+                report_date = excluded.report_date,
+                acceptance_datetime = excluded.acceptance_datetime,
+                available_at = excluded.available_at,
+                primary_document = excluded.primary_document,
+                file_number = excluded.file_number,
+                film_number = excluded.film_number,
+                is_xbrl = excluded.is_xbrl,
+                is_inline_xbrl = excluded.is_inline_xbrl,
+                source_url = excluded.source_url,
+                updated_at = excluded.updated_at
+            """
+        )
+        for start in range(0, len(rows), chunk_size):
+            self._conn.executemany(upsert_sql, rows[start : start + chunk_size])
 
     def list_for_ticker(
         self,

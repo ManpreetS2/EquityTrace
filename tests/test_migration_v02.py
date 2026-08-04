@@ -1,19 +1,16 @@
-"""DuckDB connection helpers and schema initialization."""
+"""Backward-compatible schema migration tests for v0.1 databases."""
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Iterator
-from contextlib import contextmanager
+from datetime import UTC, date, datetime
 from pathlib import Path
 
-import duckdb
+from equitytrace.database import SCHEMA_SQL, Database, initialize_database
+from equitytrace.models import FinancialFact, Issuer, Security
+from equitytrace.repositories.facts import FactsRepository
+from equitytrace.repositories.ingestion import save_company_snapshot
 
-# DuckDB currently requires the ``pytz`` package at runtime when reading
-# TIMESTAMPTZ columns into Python, even though application code uses zoneinfo.
-logger = logging.getLogger(__name__)
-
-SCHEMA_SQL = """
+V01_SCHEMA = """
 CREATE TABLE IF NOT EXISTS issuers (
     cik VARCHAR PRIMARY KEY,
     legal_name VARCHAR NOT NULL,
@@ -96,50 +93,63 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     error_message VARCHAR,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE INDEX IF NOT EXISTS idx_securities_cik ON securities(cik);
-CREATE INDEX IF NOT EXISTS idx_securities_ticker ON securities(ticker);
-CREATE INDEX IF NOT EXISTS idx_filings_cik ON filings(cik);
-CREATE INDEX IF NOT EXISTS idx_filings_form ON filings(form);
-CREATE INDEX IF NOT EXISTS idx_filings_available_at ON filings(available_at);
-CREATE INDEX IF NOT EXISTS idx_facts_cik ON financial_facts(cik);
-CREATE INDEX IF NOT EXISTS idx_facts_concept ON financial_facts(concept);
-CREATE INDEX IF NOT EXISTS idx_facts_available_at ON financial_facts(available_at);
-CREATE INDEX IF NOT EXISTS idx_facts_accession ON financial_facts(accession_number);
-CREATE INDEX IF NOT EXISTS idx_ingestion_runs_finished ON ingestion_runs(finished_at);
 """
 
 
-class Database:
-    """Thin wrapper around a DuckDB database file."""
+def test_v01_database_migrates_successfully(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.duckdb"
+    legacy = Database(path)
+    with legacy.session() as conn:
+        conn.execute(V01_SCHEMA)
+        save_company_snapshot(
+            conn,
+            issuer=Issuer(cik="0000320193", legal_name="Apple Inc."),
+            securities=[Security(ticker="AAPL", cik="0000320193", is_primary=True)],
+            filings=[],
+            facts=[
+                FinancialFact(
+                    cik="0000320193",
+                    taxonomy="us-gaap",
+                    concept="Assets",
+                    unit="USD",
+                    value=1.0,
+                    end_date=date(2023, 9, 30),
+                    available_at=datetime(2023, 11, 3, tzinfo=UTC),
+                    fiscal_year=2023,
+                    fiscal_period="FY",
+                    form="10-K",
+                    accession_number="0000320193-23-000106",
+                ).with_fact_id()
+            ],
+        )
 
-    def __init__(self, path: Path) -> None:
-        self.path = Path(path)
+    # Apply current schema (includes v0.2 additive tables).
+    db = initialize_database(path)
+    with db.session() as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'main'
+                """
+            ).fetchall()
+        }
+        assert "factor_runs" in tables
+        assert "factor_values" in tables
+        assert "schema_migrations" in tables
+        assert "financial_facts" in tables
 
-    def connect(self, *, read_only: bool = False) -> duckdb.DuckDBPyConnection:
-        """Open a new DuckDB connection. Caller owns and must close it."""
-        if not read_only:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        return duckdb.connect(str(self.path), read_only=read_only)
+        facts = FactsRepository(conn).search("AAPL", concept="Assets")
+        assert len(facts) == 1
+        assert facts[0].value == 1.0
 
-    @contextmanager
-    def session(self, *, read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
-        """Context-managed DuckDB connection."""
-        conn = self.connect(read_only=read_only)
-        try:
-            yield conn
-        finally:
-            conn.close()
+        version = conn.execute(
+            "SELECT version FROM schema_migrations WHERE version = '0.2.0'"
+        ).fetchone()
+        assert version is not None
 
-    def initialize(self) -> None:
-        """Create tables and indexes idempotently."""
-        with self.session() as conn:
-            conn.execute(SCHEMA_SQL)
-        logger.info("Initialized DuckDB schema at %s", self.path)
-
-
-def initialize_database(path: Path) -> Database:
-    """Create a Database instance and ensure the schema exists."""
-    db = Database(path)
-    db.initialize()
-    return db
+    # Idempotent re-initialize
+    initialize_database(path)
+    assert "CREATE TABLE IF NOT EXISTS factor_values" in SCHEMA_SQL

@@ -18,7 +18,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from filingedge.config import Settings
+from equitytrace.config import Settings
 
 logger = logging.getLogger(__name__)
 

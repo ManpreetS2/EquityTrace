@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import duckdb
 
-from filingedge.models import Security
+from equitytrace.models import Security
 
 
 class SecuritiesRepository:

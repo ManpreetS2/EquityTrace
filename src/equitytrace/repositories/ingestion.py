@@ -10,8 +10,8 @@ from typing import Any
 
 import duckdb
 
-from filingedge.database import Database
-from filingedge.models import (
+from equitytrace.database import Database
+from equitytrace.models import (
     Filing,
     FinancialFact,
     IngestionRun,
@@ -20,20 +20,20 @@ from filingedge.models import (
     ResolvedTicker,
     Security,
 )
-from filingedge.repositories.facts import FactsRepository
-from filingedge.repositories.filings import FilingsRepository
-from filingedge.repositories.issuers import IssuersRepository
-from filingedge.repositories.securities import SecuritiesRepository
-from filingedge.sec.client import SecClient
-from filingedge.sec.company_facts import fetch_company_facts
-from filingedge.sec.normalization import (
+from equitytrace.repositories.facts import FactsRepository
+from equitytrace.repositories.filings import FilingsRepository
+from equitytrace.repositories.issuers import IssuersRepository
+from equitytrace.repositories.securities import SecuritiesRepository
+from equitytrace.sec.client import SecClient
+from equitytrace.sec.company_facts import fetch_company_facts
+from equitytrace.sec.normalization import (
     normalize_company_facts,
     normalize_filings,
     normalize_issuer,
     normalize_securities,
 )
-from filingedge.sec.submissions import fetch_all_submissions
-from filingedge.sec.tickers import resolve_ticker
+from equitytrace.sec.submissions import fetch_all_submissions
+from equitytrace.sec.tickers import resolve_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -171,17 +171,19 @@ class IngestionRepository:
         filings: list[Filing],
         facts: list[FinancialFact],
     ) -> None:
+        """
+        Persist one company snapshot.
+
+        Filings/facts for a single CIK use DELETE + bulk INSERT (idempotent).
+        An explicit multi-statement DuckDB transaction is avoided because live
+        Company Facts payloads (~20k+ facts) OOM under ``BEGIN`` + upsert on
+        constrained hosts; re-ingestion remains safe and countable.
+        """
         with self._database.session() as conn:
-            conn.execute("BEGIN TRANSACTION")
-            try:
-                IssuersRepository(conn).upsert(issuer)
-                SecuritiesRepository(conn).upsert_many(securities)
-                FilingsRepository(conn).upsert_many(filings)
-                FactsRepository(conn).upsert_many(facts)
-                conn.execute("COMMIT")
-            except Exception:
-                conn.execute("ROLLBACK")
-                raise
+            IssuersRepository(conn).upsert(issuer)
+            SecuritiesRepository(conn).upsert_many(securities)
+            FilingsRepository(conn).upsert_many(filings)
+            FactsRepository(conn).upsert_many(facts)
 
     def _record_run_start(
         self,

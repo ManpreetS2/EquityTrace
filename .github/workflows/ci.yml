@@ -36,4 +36,4 @@ jobs:
         run: uv run pytest
         env:
           # Tests use fixtures + mock transport; no live SEC access.
-          FILINGEDGE_SEC_EMAIL: ci@example.com
+          EQUITYTRACE_SEC_EMAIL: ci@example.com

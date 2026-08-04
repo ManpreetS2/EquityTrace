@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from filingedge.cli import app
-from filingedge.config import clear_settings_cache
-from filingedge.sec.client import SecClient
+from equitytrace.cli import app
+from equitytrace.config import clear_settings_cache
+from equitytrace.sec.client import SecClient
 
 runner = CliRunner()
 
@@ -18,14 +18,15 @@ def test_cli_missing_sec_email_clean_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.delenv("FILINGEDGE_SEC_EMAIL", raising=False)
-    monkeypatch.setenv("FILINGEDGE_SEC_EMAIL", "")
-    monkeypatch.setenv("FILINGEDGE_DATABASE_PATH", str(tmp_path / "x.duckdb"))
+    for key in ("EQUITYTRACE_SEC_EMAIL", "FILINGEDGE_SEC_EMAIL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "")
+    monkeypatch.setenv("EQUITYTRACE_DATABASE_PATH", str(tmp_path / "x.duckdb"))
     clear_settings_cache()
 
     result = runner.invoke(app, ["resolve", "AAPL"])
     assert result.exit_code != 0
-    assert "FILINGEDGE_SEC_EMAIL" in result.output
+    assert "EQUITYTRACE_SEC_EMAIL" in result.output
     assert "Traceback" not in result.output
 
 
@@ -61,4 +62,12 @@ def test_cli_unknown_ticker_clean_error(
 def test_cli_version() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert "EquityTrace" in result.output
+    assert "0.2.0" in result.output
+
+
+def test_cli_help_branding() -> None:
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "EquityTrace" in result.output
+    assert "filings" in result.output.lower() or "factors" in result.output.lower()

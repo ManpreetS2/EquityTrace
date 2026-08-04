@@ -6,26 +6,26 @@ from datetime import UTC, date, datetime
 
 import pytest
 
-from filingedge.database import Database
-from filingedge.models import Filing, FinancialFact, Issuer, Security
-from filingedge.repositories.facts import FactsRepository
-from filingedge.repositories.filings import FilingsRepository
-from filingedge.repositories.ingestion import (
+from equitytrace.database import Database
+from equitytrace.models import Filing, FinancialFact, Issuer, Security
+from equitytrace.repositories.facts import FactsRepository
+from equitytrace.repositories.filings import FilingsRepository
+from equitytrace.repositories.ingestion import (
     IngestionError,
     IngestionRepository,
     save_company_snapshot,
 )
-from filingedge.repositories.issuers import IssuersRepository
-from filingedge.repositories.securities import SecuritiesRepository
-from filingedge.sec.client import SecClient
-from filingedge.sec.company_facts import fetch_company_facts
-from filingedge.sec.normalization import (
+from equitytrace.repositories.issuers import IssuersRepository
+from equitytrace.repositories.securities import SecuritiesRepository
+from equitytrace.sec.client import SecClient
+from equitytrace.sec.company_facts import fetch_company_facts
+from equitytrace.sec.normalization import (
     normalize_company_facts,
     normalize_filings,
     normalize_issuer,
     normalize_securities,
 )
-from filingedge.sec.submissions import fetch_all_submissions
+from equitytrace.sec.submissions import fetch_all_submissions
 
 
 def test_schema_initialize_idempotent(db: Database) -> None:
@@ -99,10 +99,16 @@ def test_amended_filing_does_not_overwrite_original(db: Database) -> None:
         assert FilingsRepository(conn).count() == 2
 
 
-def test_persist_atomic_rolls_back_entire_ingestion(
+def test_persist_failure_during_facts_is_repairable_by_reingest(
     db: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """
+    Large live Company Facts payloads cannot use a DuckDB multi-statement
+    transaction without OOM, so a mid-persist failure may leave issuer rows.
+
+    Re-ingestion must still repair and remain idempotent.
+    """
     repo = IngestionRepository(db)
     issuer = Issuer(cik="0000320193", legal_name="Apple Inc.")
     securities = [Security(ticker="AAPL", cik="0000320193", is_primary=True)]
@@ -136,9 +142,19 @@ def test_persist_atomic_rolls_back_entire_ingestion(
         )
 
     with db.session(read_only=True) as conn:
-        assert IssuersRepository(conn).count() == 0
-        assert SecuritiesRepository(conn).count() == 0
+        assert IssuersRepository(conn).count() == 1
+        assert SecuritiesRepository(conn).count() == 1
         assert FactsRepository(conn).count() == 0
+
+    monkeypatch.setattr(FactsRepository, "upsert_many", original_upsert)
+    repo._persist_atomic(
+        issuer=issuer,
+        securities=securities,
+        filings=[],
+        facts=facts,
+    )
+    with db.session(read_only=True) as conn:
+        assert FactsRepository(conn).count() == 1
 
 
 def test_ingest_ticker_idempotent(db: Database, sec_client: SecClient) -> None:
@@ -169,7 +185,7 @@ def test_ingest_records_failure_without_partial_data(
         raise RuntimeError("network down")
 
     monkeypatch.setattr(
-        "filingedge.repositories.ingestion.fetch_all_submissions",
+        "equitytrace.repositories.ingestion.fetch_all_submissions",
         boom,
     )
     with pytest.raises(IngestionError, match="Ingestion failed"):

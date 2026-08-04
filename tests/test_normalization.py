@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from filingedge.models import Filing
-from filingedge.sec.normalization import (
+from equitytrace.models import Filing
+from equitytrace.sec.normalization import (
     deduplicate_facts,
     normalize_company_facts,
     normalize_filings,
@@ -15,7 +15,7 @@ from filingedge.sec.normalization import (
     parse_acceptance_datetime,
     resolve_available_at,
 )
-from filingedge.sec.submissions import list_archive_filenames, merge_submissions
+from equitytrace.sec.submissions import list_archive_filenames, merge_submissions
 
 EASTERN = ZoneInfo("America/New_York")
 

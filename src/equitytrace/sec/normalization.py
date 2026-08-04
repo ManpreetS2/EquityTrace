@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from filingedge.models import (
+from equitytrace.models import (
     Filing,
     FinancialFact,
     Issuer,
@@ -17,7 +17,7 @@ from filingedge.models import (
     compute_fact_id,
     normalize_cik,
 )
-from filingedge.sec.client import SUBMISSIONS_URL
+from equitytrace.sec.client import SUBMISSIONS_URL
 
 logger = logging.getLogger(__name__)
 

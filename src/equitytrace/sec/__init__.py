@@ -1,8 +1,8 @@
 """SEC EDGAR client and normalization helpers."""
 
-from filingedge.sec.client import SecClient, SecClientError, SecHttpError
-from filingedge.sec.company_facts import fetch_company_facts
-from filingedge.sec.normalization import (
+from equitytrace.sec.client import SecClient, SecClientError, SecHttpError
+from equitytrace.sec.company_facts import fetch_company_facts
+from equitytrace.sec.normalization import (
     normalize_company_facts,
     normalize_filings,
     normalize_issuer,
@@ -10,8 +10,8 @@ from filingedge.sec.normalization import (
     parse_acceptance_datetime,
     resolve_available_at,
 )
-from filingedge.sec.submissions import fetch_all_submissions
-from filingedge.sec.tickers import resolve_ticker
+from equitytrace.sec.submissions import fetch_all_submissions
+from equitytrace.sec.tickers import resolve_ticker
 
 __all__ = [
     "SecClient",

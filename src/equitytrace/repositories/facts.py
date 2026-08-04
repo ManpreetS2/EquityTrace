@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 
 import duckdb
 
-from filingedge.models import FinancialFact, compute_fact_id
+from equitytrace.models import FinancialFact, compute_fact_id
 
 
 class FactsRepository:
@@ -16,32 +16,21 @@ class FactsRepository:
         self._conn = conn
 
     def upsert_many(self, facts: list[FinancialFact]) -> None:
-        """Insert or update facts using deterministic fact IDs."""
+        """
+        Insert or update facts using deterministic fact IDs.
+
+        When all facts share one CIK (the normal company-ingest path), replace
+        that issuer's facts with a DELETE + bulk INSERT. This avoids DuckDB
+        ``ON CONFLICT`` memory blow-ups inside large transactions for live SEC
+        Company Facts payloads.
+        """
+        if not facts:
+            return
         now = datetime.now(UTC)
+        rows: list[list[object]] = []
         for fact in facts:
             fact_id = fact.fact_id or compute_fact_id(fact)
-            self._conn.execute(
-                """
-                INSERT INTO financial_facts (
-                    fact_id, cik, taxonomy, concept, label, description, unit, value,
-                    start_date, end_date, filing_date, acceptance_datetime, available_at,
-                    accession_number, form, fiscal_year, fiscal_period, frame, source_url,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (fact_id) DO UPDATE SET
-                    label = excluded.label,
-                    description = excluded.description,
-                    value = excluded.value,
-                    filing_date = excluded.filing_date,
-                    acceptance_datetime = excluded.acceptance_datetime,
-                    available_at = excluded.available_at,
-                    form = excluded.form,
-                    fiscal_year = excluded.fiscal_year,
-                    fiscal_period = excluded.fiscal_period,
-                    frame = excluded.frame,
-                    source_url = excluded.source_url,
-                    updated_at = excluded.updated_at
-                """,
+            rows.append(
                 [
                     fact_id,
                     fact.cik,
@@ -64,8 +53,46 @@ class FactsRepository:
                     fact.source_url,
                     now,
                     now,
-                ],
+                ]
             )
+
+        ciks = {str(row[1]) for row in rows}
+        insert_sql = """
+            INSERT INTO financial_facts (
+                fact_id, cik, taxonomy, concept, label, description, unit, value,
+                start_date, end_date, filing_date, acceptance_datetime, available_at,
+                accession_number, form, fiscal_year, fiscal_period, frame, source_url,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        chunk_size = 2000
+        if len(ciks) == 1:
+            cik = next(iter(ciks))
+            self._conn.execute("DELETE FROM financial_facts WHERE cik = ?", [cik])
+            for start in range(0, len(rows), chunk_size):
+                self._conn.executemany(insert_sql, rows[start : start + chunk_size])
+            return
+
+        upsert_sql = (
+            insert_sql
+            + """
+            ON CONFLICT (fact_id) DO UPDATE SET
+                label = excluded.label,
+                description = excluded.description,
+                value = excluded.value,
+                filing_date = excluded.filing_date,
+                acceptance_datetime = excluded.acceptance_datetime,
+                available_at = excluded.available_at,
+                form = excluded.form,
+                fiscal_year = excluded.fiscal_year,
+                fiscal_period = excluded.fiscal_period,
+                frame = excluded.frame,
+                source_url = excluded.source_url,
+                updated_at = excluded.updated_at
+            """
+        )
+        for start in range(0, len(rows), chunk_size):
+            self._conn.executemany(upsert_sql, rows[start : start + chunk_size])
 
     def search(
         self,
