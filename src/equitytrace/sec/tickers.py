@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from filingedge.models import ResolvedTicker, normalize_cik
-from filingedge.sec.client import SecClient, SecClientError
+from equitytrace.models import ResolvedTicker, normalize_cik
+from equitytrace.sec.client import SecClient, SecClientError
 
 
 def resolve_ticker(client: SecClient, ticker: str) -> ResolvedTicker:

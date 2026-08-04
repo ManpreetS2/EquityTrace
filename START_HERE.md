@@ -1,6 +1,6 @@
 # Start here
 
-Exact commands for a new developer on FilingEdge v0.1.
+Exact commands for a new developer on EquityTrace v0.2.
 
 ## 1. Configure environment
 
@@ -11,11 +11,20 @@ cp .env.example .env
 Edit `.env` and set a real contact email:
 
 ```text
-FILINGEDGE_SEC_EMAIL=you@example.com
-FILINGEDGE_SEC_ORGANIZATION=FilingEdge
+EQUITYTRACE_SEC_EMAIL=you@example.com
+EQUITYTRACE_SEC_ORGANIZATION=EquityTrace Development
 ```
 
 The SEC requires an identifying User-Agent for EDGAR fair access. Tests do **not** need this email.
+
+Legacy `FILINGEDGE_*` variables still work temporarily when the matching
+`EQUITYTRACE_*` variable is unset.
+
+To keep using an older local database path without moving files:
+
+```text
+EQUITYTRACE_DATABASE_PATH=data/filingedge.duckdb
+```
 
 ## 2. Install dependencies
 
@@ -25,29 +34,43 @@ Requires [uv](https://github.com/astral-sh/uv) and Python 3.12+.
 uv sync --all-groups --no-editable
 ```
 
-Use `--no-editable` so the `filingedge` CLI remains importable on macOS.
+Use `--no-editable` so the `equitytrace` CLI remains importable on macOS.
 Python 3.12+ ignores `.pth` files marked `UF_HIDDEN`, which can happen with
 editable installs under recent macOS provenance rules.
 
 ## 3. Initialize the database
 
 ```bash
-uv run filingedge init-db
+uv run equitytrace init-db
 ```
+
+Existing v0.1 databases are upgraded additively by the same command.
 
 ## 4. Ingest a company (live SEC)
 
 ```bash
-uv run filingedge ingest AAPL
+uv run equitytrace ingest AAPL
 ```
 
-## 5. Explore stored data
+## 5. Explore stored data and statements
 
 ```bash
-uv run filingedge filings AAPL
-uv run filingedge facts AAPL --concept Revenue
-uv run filingedge facts-as-of AAPL --date 2024-01-15
-uv run filingedge db-info
+uv run equitytrace filings AAPL
+uv run equitytrace facts AAPL --concept Revenue
+uv run equitytrace facts-as-of AAPL --date 2024-01-15
+uv run equitytrace statements AAPL --period FY2023
+uv run equitytrace factor AAPL revenue-growth --period FY2023
+uv run equitytrace factors AAPL --period FY2023
+uv run equitytrace db-info
+```
+
+Optional multi-name ranking after ingesting more tickers:
+
+```bash
+uv run equitytrace rank \
+  --tickers AAPL,MSFT,GOOGL \
+  --factor revenue-growth \
+  --period FY2023
 ```
 
 ## 6. Run the offline test suite

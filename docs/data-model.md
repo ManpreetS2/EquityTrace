@@ -1,4 +1,4 @@
-# Data model (v0.1)
+# Data model (v0.2)
 
 ## Conceptual model
 
@@ -9,40 +9,41 @@
 | Filing | `accession_number` | SEC submission with `available_at` |
 | Financial fact | `fact_id` | Deterministic hash of natural key fields |
 | Ingestion run | `run_id` | Audit trail for ingest operations |
+| Factor run | `run_id` | Audit trail for factor calculations |
+| Factor value | `(ticker, factor, fy, fp, as_of)` | Optional materialized factor output |
 
 An issuer is **not** a ticker. Share classes and secondary listings are modeled as securities.
 
 ## Tables
 
-### issuers
+### issuers / securities / filings / financial_facts / ingestion_runs
 
-`cik`, `legal_name`, `entity_type`, `sic`, `sic_description`, `fiscal_year_end`, `state_of_incorporation`, timestamps
+Unchanged from v0.1. Facts still preserve original `taxonomy` + `concept`.
 
-### securities
+### schema_migrations
 
-`ticker`, `cik`, `title`, `exchange`, `is_primary`, timestamps
-Primary key: `(ticker, cik)`
+Records applied logical schema versions (`0.2.0`, …). Initialization is
+idempotent via `CREATE TABLE IF NOT EXISTS` plus `ON CONFLICT DO NOTHING`.
 
-### filings
+### factor_runs
 
-`accession_number`, `cik`, `form`, `filing_date`, `report_date`, `acceptance_datetime`, `available_at`, document metadata, XBRL flags, `source_url`
+One row per calculation attempt: ticker, CIK, factor name, fiscal period,
+`as_of`, status.
 
-### financial_facts
+### factor_values
 
-Preserves original `taxonomy` + `concept` (no canonical COA mapping in v0.1).
+Idempotent store keyed by `(ticker, factor_name, fiscal_year, fiscal_period, as_of)`.
+Repeated calculations overwrite the stored value.
 
-Natural key components hashed into `fact_id`:
+Canonical statement snapshots are **not** materialized by default; they are
+assembled in memory by `FinancialsService`.
 
-- cik, taxonomy, concept, unit
-- start_date, end_date
-- accession_number, form, fiscal_year, fiscal_period, frame
-- value
+## Canonical concepts
 
-Duplicate observations from repeated ingestion collapse on `fact_id`.
-
-### ingestion_runs
-
-Tracks success/failure counts and timestamps for each ingest attempt.
+Income, balance sheet, and cash-flow concepts are defined in
+`equitytrace.financials.mappings.CANONICAL_MAPPINGS`. Derived metrics
+(`free_cash_flow`, `net_debt`, `working_capital`, `invested_capital`, `ebitda`,
+`nopat`) are computed only when required inputs exist.
 
 ## Availability semantics
 
@@ -52,3 +53,14 @@ Tracks success/failure counts and timestamps for each ingest attempt.
 - Else end of filing date (Eastern → UTC)
 - Never start-of-day filing date
 - Never report period end date
+
+Amendments (`10-K/A`, `10-Q/A`) are separate facts. A snapshot before the
+amendment acceptance uses the original filing; after acceptance, the amended
+value may win when it is the best available fact.
+
+## Naming note (EquityTrace rename)
+
+Table names and persisted migration identifiers do not embed the product brand.
+Databases created under the historical FilingEdge default path
+(`data/filingedge.duckdb`) remain compatible when opened via an explicit
+`EQUITYTRACE_DATABASE_PATH` (or temporary `FILINGEDGE_DATABASE_PATH`) setting.

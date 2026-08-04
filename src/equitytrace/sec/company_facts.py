@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from filingedge.sec.client import SecClient
+from equitytrace.sec.client import SecClient
 
 
 def fetch_company_facts(client: SecClient, cik: str) -> dict[str, Any]:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from filingedge.models import normalize_cik
-from filingedge.sec.client import SecClient, SecClientError
-from filingedge.sec.tickers import resolve_ticker
+from equitytrace.models import normalize_cik
+from equitytrace.sec.client import SecClient, SecClientError
+from equitytrace.sec.tickers import resolve_ticker
 
 
 def test_normalize_cik_zero_padding() -> None:

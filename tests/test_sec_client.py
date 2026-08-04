@@ -5,22 +5,24 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from filingedge.config import ConfigurationError, Settings, clear_settings_cache
-from filingedge.sec.client import COMPANY_TICKERS_URL, RetryableSecError, SecClient, SecHttpError
+from equitytrace.config import ConfigurationError, Settings, clear_settings_cache
+from equitytrace.sec.client import COMPANY_TICKERS_URL, RetryableSecError, SecClient, SecHttpError
 
 
 def test_missing_sec_email_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FILINGEDGE_SEC_EMAIL", raising=False)
-    monkeypatch.setenv("FILINGEDGE_SEC_EMAIL", "")
+    for key in ("EQUITYTRACE_SEC_EMAIL", "FILINGEDGE_SEC_EMAIL"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "")
     clear_settings_cache()
     settings = Settings()
-    with pytest.raises(ConfigurationError, match="FILINGEDGE_SEC_EMAIL"):
+    with pytest.raises(ConfigurationError, match="EQUITYTRACE_SEC_EMAIL"):
         settings.user_agent()
 
 
 def test_user_agent_contains_org_and_email(settings: Settings) -> None:
     ua = settings.user_agent()
-    assert "FilingEdge Tests" in ua
+    assert "EquityTrace Tests" in ua
+    assert "EquityTrace/" in ua
     assert "tests@example.com" in ua
 
 

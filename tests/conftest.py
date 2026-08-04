@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for offline FilingEdge tests."""
+"""Shared pytest fixtures for offline EquityTrace tests."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from filingedge.config import Settings, clear_settings_cache
-from filingedge.database import Database, initialize_database
-from filingedge.sec.client import (
+from equitytrace.config import Settings, clear_settings_cache
+from equitytrace.database import Database, initialize_database
+from equitytrace.sec.client import (
     COMPANY_FACTS_URL,
     COMPANY_TICKERS_URL,
     SUBMISSIONS_ARCHIVE_BASE,
@@ -27,7 +27,25 @@ def _load(name: str) -> object:
 
 
 @pytest.fixture(autouse=True)
-def _clear_settings() -> Iterator[None]:
+def _clear_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    # Prevent ambient shell/legacy env from leaking into tests.
+    for key in (
+        "EQUITYTRACE_SEC_EMAIL",
+        "EQUITYTRACE_SEC_ORGANIZATION",
+        "EQUITYTRACE_DATABASE_PATH",
+        "EQUITYTRACE_CACHE_DIR",
+        "EQUITYTRACE_ENABLE_CACHE",
+        "EQUITYTRACE_HTTP_TIMEOUT_SECONDS",
+        "EQUITYTRACE_MAX_REQUESTS_PER_SECOND",
+        "FILINGEDGE_SEC_EMAIL",
+        "FILINGEDGE_SEC_ORGANIZATION",
+        "FILINGEDGE_DATABASE_PATH",
+        "FILINGEDGE_CACHE_DIR",
+        "FILINGEDGE_ENABLE_CACHE",
+        "FILINGEDGE_HTTP_TIMEOUT_SECONDS",
+        "FILINGEDGE_MAX_REQUESTS_PER_SECOND",
+    ):
+        monkeypatch.delenv(key, raising=False)
     clear_settings_cache()
     yield
     clear_settings_cache()
@@ -36,13 +54,13 @@ def _clear_settings() -> Iterator[None]:
 @pytest.fixture
 def settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     """Settings suitable for offline tests."""
-    monkeypatch.setenv("FILINGEDGE_SEC_EMAIL", "tests@example.com")
-    monkeypatch.setenv("FILINGEDGE_SEC_ORGANIZATION", "FilingEdge Tests")
-    monkeypatch.setenv("FILINGEDGE_DATABASE_PATH", str(tmp_path / "test.duckdb"))
-    monkeypatch.setenv("FILINGEDGE_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.setenv("FILINGEDGE_ENABLE_CACHE", "false")
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_SEC_ORGANIZATION", "EquityTrace Tests")
+    monkeypatch.setenv("EQUITYTRACE_DATABASE_PATH", str(tmp_path / "test.duckdb"))
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "false")
     clear_settings_cache()
-    return Settings()
+    return Settings(_env_file=None)  # type: ignore[call-arg]
 
 
 @pytest.fixture

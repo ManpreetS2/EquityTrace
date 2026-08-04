@@ -10,17 +10,23 @@
 ### v0.2
 
 * Canonical financial statements
+* XBRL concept mapping registry
+* Annual / quarterly normalization + YTD derivation
+* Restatement / amendment-aware snapshots
 * Revenue growth
 * Operating-margin change
-* Free-cash-flow yield
+* Free cash flow (+ FCF yield when market cap supplied)
 * Debt change
 * ROA
 * Accrual quality
-* Momentum
+* Basic quality score
+* Cross-sectional ranking
+* CLI: `statements`, `factor`, `factors`, `rank`
 
 ### v0.3
 
 * Historical market prices
+* Native FCF yield using stored market cap
 * Portfolio construction
 * Rebalancing
 * Transaction costs

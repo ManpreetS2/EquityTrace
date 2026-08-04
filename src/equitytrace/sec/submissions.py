@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from filingedge.sec.client import SecClient
+from equitytrace.sec.client import SecClient
 
 logger = logging.getLogger(__name__)
 

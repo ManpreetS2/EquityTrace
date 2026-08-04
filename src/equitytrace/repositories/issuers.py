@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import duckdb
 
-from filingedge.models import Issuer
+from equitytrace.models import Issuer
 
 
 class IssuersRepository:

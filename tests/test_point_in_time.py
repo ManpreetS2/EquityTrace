@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from filingedge.database import Database
-from filingedge.models import FinancialFact, Issuer, Security
-from filingedge.repositories.facts import FactsRepository
-from filingedge.repositories.ingestion import IngestionRepository, save_company_snapshot
-from filingedge.sec.client import SecClient
+from equitytrace.database import Database
+from equitytrace.models import FinancialFact, Issuer, Security
+from equitytrace.repositories.facts import FactsRepository
+from equitytrace.repositories.ingestion import IngestionRepository, save_company_snapshot
+from equitytrace.sec.client import SecClient
 
 
 def test_fact_not_visible_before_available_at(db: Database) -> None:
