@@ -185,7 +185,7 @@ def test_no_source_imports_filingedge() -> None:
 def test_package_importable() -> None:
     mod = importlib.import_module("equitytrace")
     assert hasattr(mod, "__version__")
-    assert mod.__version__.startswith("0.2")
+    assert mod.__version__.startswith("0.3")
 
 
 def test_docs_do_not_present_filingedge_as_current_name() -> None:

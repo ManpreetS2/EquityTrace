@@ -1,0 +1,597 @@
+"""Market instrument, mapping, price-bar, and run persistence."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import UTC, date, datetime
+from decimal import Decimal
+
+import duckdb
+
+from equitytrace.market.models import (
+    AssetType,
+    DailyPriceBar,
+    MarketDataProviderName,
+    MarketDataRunStatus,
+    MarketInstrument,
+    MarketSymbolMapping,
+    PriceAdjustmentMode,
+    make_instrument_id,
+    make_mapping_id,
+)
+from equitytrace.models import utc_now as _utc_now
+
+
+class UpsertCounts:
+    """Counts for an idempotent price-bar upsert."""
+
+    def __init__(self) -> None:
+        self.inserted = 0
+        self.updated = 0
+        self.unchanged = 0
+        self.rejected = 0
+
+
+class MarketRepository:
+    """Read/write access to market-data tables."""
+
+    def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
+        self._conn = conn
+
+    def get_or_create_instrument(
+        self,
+        canonical_symbol: str,
+        *,
+        asset_type: AssetType = AssetType.EQUITY,
+        security_ticker: str | None = None,
+        issuer_cik: str | None = None,
+        exchange: str | None = None,
+        currency: str = "USD",
+        exchange_timezone: str = "America/New_York",
+    ) -> MarketInstrument:
+        symbol = canonical_symbol.strip().upper()
+        existing = self.get_instrument_by_symbol(symbol)
+        if existing is not None:
+            return existing
+
+        instrument = MarketInstrument(
+            instrument_id=make_instrument_id(symbol),
+            canonical_symbol=symbol,
+            asset_type=asset_type,
+            security_ticker=security_ticker or (symbol if asset_type is AssetType.EQUITY else None),
+            issuer_cik=issuer_cik,
+            exchange=exchange,
+            currency=currency,
+            exchange_timezone=exchange_timezone,
+        )
+        now = _utc_now()
+        self._conn.execute(
+            """
+            INSERT INTO market_instruments (
+                instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
+                exchange, mic_code, currency, exchange_timezone, active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (instrument_id) DO NOTHING
+            """,
+            [
+                instrument.instrument_id,
+                instrument.canonical_symbol,
+                instrument.asset_type.value,
+                instrument.security_ticker,
+                instrument.issuer_cik,
+                instrument.exchange,
+                instrument.mic_code,
+                instrument.currency,
+                instrument.exchange_timezone,
+                instrument.active,
+                now,
+                now,
+            ],
+        )
+        # Unique on canonical_symbol may win a race; re-read.
+        stored = self.get_instrument_by_symbol(symbol)
+        if stored is None:
+            raise RuntimeError(f"Failed to persist instrument {symbol}")
+        return stored
+
+    def get_instrument_by_symbol(self, canonical_symbol: str) -> MarketInstrument | None:
+        row = self._conn.execute(
+            """
+            SELECT instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
+                   exchange, mic_code, currency, exchange_timezone, active, created_at, updated_at
+            FROM market_instruments
+            WHERE canonical_symbol = ?
+            """,
+            [canonical_symbol.strip().upper()],
+        ).fetchone()
+        return _row_to_instrument(row) if row else None
+
+    def get_instrument(self, instrument_id: str) -> MarketInstrument | None:
+        row = self._conn.execute(
+            """
+            SELECT instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
+                   exchange, mic_code, currency, exchange_timezone, active, created_at, updated_at
+            FROM market_instruments
+            WHERE instrument_id = ?
+            """,
+            [instrument_id],
+        ).fetchone()
+        return _row_to_instrument(row) if row else None
+
+    def count_active_common_tickers_for_issuer(self, issuer_cik: str) -> int:
+        """Count distinct equity securities linked to an issuer CIK.
+
+        The securities table has no share-class or active flag in v0.3a, so any
+        multiple listed tickers for one issuer is treated as potential
+        multi-class ambiguity (conservative).
+        """
+        return self.count_securities_for_issuer(issuer_cik)
+
+    def count_securities_for_issuer(self, issuer_cik: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT ticker) FROM securities WHERE cik = ?",
+            [issuer_cik],
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def upsert_symbol_mapping(self, mapping: MarketSymbolMapping) -> MarketSymbolMapping:
+        """Insert or update a provider mapping, allowing historical symbol reuse.
+
+        Uniqueness is ``mapping_id`` (derived from provider, symbol, instrument,
+        and valid_from). A provider_symbol may map to different instruments in
+        non-overlapping validity windows. Overlapping active primary mappings
+        for the same provider_symbol raise ``ValueError``.
+        """
+        now = _utc_now()
+        mapping_id = mapping.mapping_id or make_mapping_id(
+            mapping.provider.value,
+            mapping.provider_symbol,
+            mapping.instrument_id,
+            valid_from=mapping.valid_from,
+        )
+        self._assert_no_overlapping_provider_symbol(mapping, mapping_id=mapping_id)
+        self._conn.execute(
+            """
+            INSERT INTO market_symbol_mappings (
+                mapping_id, instrument_id, provider, provider_symbol, valid_from, valid_to,
+                is_primary, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (mapping_id) DO UPDATE SET
+                instrument_id = excluded.instrument_id,
+                valid_from = excluded.valid_from,
+                valid_to = excluded.valid_to,
+                is_primary = excluded.is_primary,
+                updated_at = excluded.updated_at
+            """,
+            [
+                mapping_id,
+                mapping.instrument_id,
+                mapping.provider.value,
+                mapping.provider_symbol,
+                mapping.valid_from,
+                mapping.valid_to,
+                mapping.is_primary,
+                now,
+                now,
+            ],
+        )
+        return mapping.model_copy(update={"mapping_id": mapping_id, "updated_at": now})
+
+    def _assert_no_overlapping_provider_symbol(
+        self,
+        mapping: MarketSymbolMapping,
+        *,
+        mapping_id: str,
+    ) -> None:
+        rows = self._conn.execute(
+            """
+            SELECT mapping_id, instrument_id, valid_from, valid_to
+            FROM market_symbol_mappings
+            WHERE provider = ?
+              AND provider_symbol = ?
+              AND mapping_id <> ?
+            """,
+            [mapping.provider.value, mapping.provider_symbol, mapping_id],
+        ).fetchall()
+        for row in rows:
+            if row[1] == mapping.instrument_id:
+                continue
+            if _intervals_overlap(
+                mapping.valid_from,
+                mapping.valid_to,
+                row[2],
+                row[3],
+            ):
+                raise ValueError(
+                    f"Overlapping provider mapping for {mapping.provider.value}/"
+                    f"{mapping.provider_symbol} between instruments "
+                    f"{mapping.instrument_id} and {row[1]}"
+                )
+
+    def get_active_symbol_mapping(
+        self,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        *,
+        as_of: date | None = None,
+    ) -> MarketSymbolMapping | None:
+        params: list[object] = [instrument_id, provider.value]
+        sql = """
+            SELECT mapping_id, instrument_id, provider, provider_symbol, valid_from, valid_to,
+                   is_primary, created_at, updated_at
+            FROM market_symbol_mappings
+            WHERE instrument_id = ?
+              AND provider = ?
+              AND is_primary = TRUE
+        """
+        if as_of is not None:
+            sql += """
+              AND (valid_from IS NULL OR valid_from <= ?)
+              AND (valid_to IS NULL OR valid_to >= ?)
+            """
+            params.extend([as_of, as_of])
+        else:
+            sql += " AND valid_to IS NULL"
+        sql += " ORDER BY valid_from DESC NULLS LAST, provider_symbol LIMIT 1"
+        row = self._conn.execute(sql, params).fetchone()
+        return _row_to_mapping(row) if row else None
+
+    def upsert_price_bars(self, bars: list[DailyPriceBar]) -> UpsertCounts:
+        counts = UpsertCounts()
+        if not bars:
+            return counts
+        now = _utc_now()
+        for bar in bars:
+            existing = self._conn.execute(
+                """
+                SELECT open, high, low, close, volume, currency, exchange_timezone,
+                       available_at, fetched_at, source_metadata_json
+                FROM daily_price_bars
+                WHERE instrument_id = ?
+                  AND provider = ?
+                  AND trading_date = ?
+                  AND adjustment_mode = ?
+                """,
+                [
+                    bar.instrument_id,
+                    bar.provider.value,
+                    bar.trading_date,
+                    bar.adjustment_mode.value,
+                ],
+            ).fetchone()
+            if existing is None:
+                self._conn.execute(
+                    """
+                    INSERT INTO daily_price_bars (
+                        instrument_id, provider, trading_date, adjustment_mode,
+                        open, high, low, close, volume, currency, exchange_timezone,
+                        available_at, fetched_at, source_metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        bar.instrument_id,
+                        bar.provider.value,
+                        bar.trading_date,
+                        bar.adjustment_mode.value,
+                        str(bar.open),
+                        str(bar.high),
+                        str(bar.low),
+                        str(bar.close),
+                        bar.volume,
+                        bar.currency,
+                        bar.exchange_timezone,
+                        bar.available_at,
+                        bar.fetched_at,
+                        bar.source_metadata_json,
+                        now,
+                        now,
+                    ],
+                )
+                counts.inserted += 1
+                continue
+
+            same = (
+                Decimal(str(existing[0])) == bar.open
+                and Decimal(str(existing[1])) == bar.high
+                and Decimal(str(existing[2])) == bar.low
+                and Decimal(str(existing[3])) == bar.close
+                and int(existing[4]) == bar.volume
+                and str(existing[5]) == bar.currency
+                and str(existing[6]) == bar.exchange_timezone
+                and _as_utc(existing[7]) == _as_utc(bar.available_at)
+                and (existing[9] or None) == (bar.source_metadata_json or None)
+            )
+            if same:
+                counts.unchanged += 1
+                continue
+
+            self._conn.execute(
+                """
+                UPDATE daily_price_bars SET
+                    open = ?, high = ?, low = ?, close = ?, volume = ?,
+                    currency = ?, exchange_timezone = ?, available_at = ?,
+                    fetched_at = ?, source_metadata_json = ?, updated_at = ?
+                WHERE instrument_id = ?
+                  AND provider = ?
+                  AND trading_date = ?
+                  AND adjustment_mode = ?
+                """,
+                [
+                    str(bar.open),
+                    str(bar.high),
+                    str(bar.low),
+                    str(bar.close),
+                    bar.volume,
+                    bar.currency,
+                    bar.exchange_timezone,
+                    bar.available_at,
+                    bar.fetched_at,
+                    bar.source_metadata_json,
+                    now,
+                    bar.instrument_id,
+                    bar.provider.value,
+                    bar.trading_date,
+                    bar.adjustment_mode.value,
+                ],
+            )
+            counts.updated += 1
+        return counts
+
+    def get_price_bars(
+        self,
+        instrument_id: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.NONE,
+        provider: MarketDataProviderName | None = None,
+        limit: int | None = None,
+        as_of: datetime | None = None,
+    ) -> list[DailyPriceBar]:
+        sql = """
+            SELECT instrument_id, provider, trading_date, adjustment_mode,
+                   open, high, low, close, volume, currency, exchange_timezone,
+                   available_at, fetched_at, source_metadata_json
+            FROM daily_price_bars
+            WHERE instrument_id = ?
+              AND adjustment_mode = ?
+        """
+        params: list[object] = [instrument_id, adjustment_mode.value]
+        if provider is not None:
+            sql += " AND provider = ?"
+            params.append(provider.value)
+        if start_date is not None:
+            sql += " AND trading_date >= ?"
+            params.append(start_date)
+        if end_date is not None:
+            sql += " AND trading_date <= ?"
+            params.append(end_date)
+        if as_of is not None:
+            as_of_utc = as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)
+            sql += " AND available_at <= ?"
+            params.append(as_of_utc.astimezone(UTC))
+        sql += " ORDER BY trading_date ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_bar(row) for row in rows]
+
+    def get_latest_price_on_or_before(
+        self,
+        instrument_id: str,
+        on_or_before: date,
+        *,
+        adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.NONE,
+        provider: MarketDataProviderName | None = None,
+        as_of: datetime | None = None,
+    ) -> DailyPriceBar | None:
+        sql = """
+            SELECT instrument_id, provider, trading_date, adjustment_mode,
+                   open, high, low, close, volume, currency, exchange_timezone,
+                   available_at, fetched_at, source_metadata_json
+            FROM daily_price_bars
+            WHERE instrument_id = ?
+              AND adjustment_mode = ?
+              AND trading_date <= ?
+        """
+        params: list[object] = [instrument_id, adjustment_mode.value, on_or_before]
+        if provider is not None:
+            sql += " AND provider = ?"
+            params.append(provider.value)
+        if as_of is not None:
+            as_of_utc = as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)
+            sql += " AND available_at <= ?"
+            params.append(as_of_utc.astimezone(UTC))
+        sql += " ORDER BY trading_date DESC LIMIT 1"
+        row = self._conn.execute(sql, params).fetchone()
+        return _row_to_bar(row) if row else None
+
+    def get_price_as_of(
+        self,
+        instrument_id: str,
+        as_of: datetime,
+        *,
+        adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.NONE,
+    ) -> DailyPriceBar | None:
+        as_of_utc = as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)
+        row = self._conn.execute(
+            """
+            SELECT instrument_id, provider, trading_date, adjustment_mode,
+                   open, high, low, close, volume, currency, exchange_timezone,
+                   available_at, fetched_at, source_metadata_json
+            FROM daily_price_bars
+            WHERE instrument_id = ?
+              AND adjustment_mode = ?
+              AND available_at <= ?
+            ORDER BY trading_date DESC, available_at DESC
+            LIMIT 1
+            """,
+            [instrument_id, adjustment_mode.value, as_of_utc.astimezone(UTC)],
+        ).fetchone()
+        return _row_to_bar(row) if row else None
+
+    def get_stored_date_range(
+        self,
+        instrument_id: str,
+        *,
+        adjustment_mode: PriceAdjustmentMode,
+        provider: MarketDataProviderName | None = None,
+    ) -> tuple[date | None, date | None]:
+        sql = """
+            SELECT MIN(trading_date), MAX(trading_date)
+            FROM daily_price_bars
+            WHERE instrument_id = ?
+              AND adjustment_mode = ?
+        """
+        params: list[object] = [instrument_id, adjustment_mode.value]
+        if provider is not None:
+            sql += " AND provider = ?"
+            params.append(provider.value)
+        row = self._conn.execute(sql, params).fetchone()
+        if not row:
+            return None, None
+        return row[0], row[1]
+
+    def create_market_data_run(
+        self,
+        *,
+        provider: MarketDataProviderName,
+        instrument_id: str,
+        requested_start_date: date,
+        requested_end_date: date,
+        adjustment_modes: list[PriceAdjustmentMode],
+    ) -> str:
+        run_id = str(uuid.uuid4())
+        now = _utc_now()
+        self._conn.execute(
+            """
+            INSERT INTO market_data_runs (
+                run_id, provider, instrument_id, requested_start_date, requested_end_date,
+                adjustment_modes_json, started_at, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                run_id,
+                provider.value,
+                instrument_id,
+                requested_start_date,
+                requested_end_date,
+                json.dumps([m.value for m in adjustment_modes]),
+                now,
+                MarketDataRunStatus.RUNNING.value,
+                now,
+            ],
+        )
+        return run_id
+
+    def complete_market_data_run(
+        self,
+        run_id: str,
+        *,
+        status: MarketDataRunStatus,
+        raw_row_count: int = 0,
+        inserted_row_count: int = 0,
+        updated_row_count: int = 0,
+        unchanged_row_count: int = 0,
+        rejected_row_count: int = 0,
+        error_summary: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE market_data_runs SET
+                completed_at = ?,
+                status = ?,
+                raw_row_count = ?,
+                inserted_row_count = ?,
+                updated_row_count = ?,
+                unchanged_row_count = ?,
+                rejected_row_count = ?,
+                error_summary = ?
+            WHERE run_id = ?
+            """,
+            [
+                _utc_now(),
+                status.value,
+                raw_row_count,
+                inserted_row_count,
+                updated_row_count,
+                unchanged_row_count,
+                rejected_row_count,
+                error_summary,
+                run_id,
+            ],
+        )
+
+
+def _intervals_overlap(
+    a_from: date | None,
+    a_to: date | None,
+    b_from: date | None,
+    b_to: date | None,
+) -> bool:
+    """Inclusive interval overlap; None bounds mean open-ended."""
+    start_a = a_from or date.min
+    end_a = a_to or date.max
+    start_b = b_from or date.min
+    end_b = b_to or date.max
+    return start_a <= end_b and start_b <= end_a
+
+
+def _as_utc(value: object) -> datetime:
+    if not isinstance(value, datetime):
+        raise TypeError(f"Expected datetime, got {type(value)!r}")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _row_to_instrument(row: tuple[object, ...]) -> MarketInstrument:
+    return MarketInstrument(
+        instrument_id=str(row[0]),
+        canonical_symbol=str(row[1]),
+        asset_type=AssetType(str(row[2])),
+        security_ticker=str(row[3]) if row[3] is not None else None,
+        issuer_cik=str(row[4]) if row[4] is not None else None,
+        exchange=str(row[5]) if row[5] is not None else None,
+        mic_code=str(row[6]) if row[6] is not None else None,
+        currency=str(row[7]),
+        exchange_timezone=str(row[8]),
+        active=bool(row[9]),
+        created_at=_as_utc(row[10]),
+        updated_at=_as_utc(row[11]),
+    )
+
+
+def _row_to_mapping(row: tuple[object, ...]) -> MarketSymbolMapping:
+    return MarketSymbolMapping(
+        mapping_id=str(row[0]),
+        instrument_id=str(row[1]),
+        provider=MarketDataProviderName(str(row[2])),
+        provider_symbol=str(row[3]),
+        valid_from=row[4],
+        valid_to=row[5],
+        is_primary=bool(row[6]),
+        created_at=_as_utc(row[7]),
+        updated_at=_as_utc(row[8]),
+    )
+
+
+def _row_to_bar(row: tuple[object, ...]) -> DailyPriceBar:
+    return DailyPriceBar(
+        instrument_id=str(row[0]),
+        provider=MarketDataProviderName(str(row[1])),
+        trading_date=row[2],
+        adjustment_mode=PriceAdjustmentMode(str(row[3])),
+        open=Decimal(str(row[4])),
+        high=Decimal(str(row[5])),
+        low=Decimal(str(row[6])),
+        close=Decimal(str(row[7])),
+        volume=int(str(row[8])),
+        currency=str(row[9]),
+        exchange_timezone=str(row[10]),
+        available_at=_as_utc(row[11]),
+        fetched_at=_as_utc(row[12]),
+        source_metadata_json=str(row[13]) if row[13] is not None else None,
+    )

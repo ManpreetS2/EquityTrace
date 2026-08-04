@@ -149,6 +149,92 @@ CREATE TABLE IF NOT EXISTS factor_values (
 CREATE INDEX IF NOT EXISTS idx_factor_values_factor ON factor_values(factor_name);
 CREATE INDEX IF NOT EXISTS idx_factor_values_as_of ON factor_values(as_of);
 CREATE INDEX IF NOT EXISTS idx_factor_runs_ticker ON factor_runs(ticker);
+
+-- v0.3a additive tables (idempotent; safe for existing v0.1/v0.2 databases)
+--
+-- Note: canonical_symbol is UNIQUE in v0.3a. This assumes one active display
+-- ticker per instrument and does not model historical ticker reuse across
+-- issuers. instrument_id remains the stable primary key; a future migration
+-- may relax the symbol uniqueness once ticker-history workflows exist.
+CREATE TABLE IF NOT EXISTS market_instruments (
+    instrument_id VARCHAR PRIMARY KEY,
+    canonical_symbol VARCHAR NOT NULL UNIQUE,
+    asset_type VARCHAR NOT NULL,
+    security_ticker VARCHAR,
+    issuer_cik VARCHAR,
+    exchange VARCHAR,
+    mic_code VARCHAR,
+    currency VARCHAR NOT NULL DEFAULT 'USD',
+    exchange_timezone VARCHAR NOT NULL DEFAULT 'America/New_York',
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+-- mapping_id is the primary key so the same provider_symbol can be reused
+-- historically by different instruments after a prior mapping expires.
+CREATE TABLE IF NOT EXISTS market_symbol_mappings (
+    mapping_id VARCHAR PRIMARY KEY,
+    instrument_id VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL,
+    provider_symbol VARCHAR NOT NULL,
+    valid_from DATE,
+    valid_to DATE,
+    is_primary BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL,
+    FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+);
+
+CREATE TABLE IF NOT EXISTS daily_price_bars (
+    instrument_id VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL,
+    trading_date DATE NOT NULL,
+    adjustment_mode VARCHAR NOT NULL,
+    open DECIMAL(18, 6) NOT NULL,
+    high DECIMAL(18, 6) NOT NULL,
+    low DECIMAL(18, 6) NOT NULL,
+    close DECIMAL(18, 6) NOT NULL,
+    volume BIGINT NOT NULL,
+    currency VARCHAR NOT NULL DEFAULT 'USD',
+    exchange_timezone VARCHAR NOT NULL DEFAULT 'America/New_York',
+    available_at TIMESTAMPTZ NOT NULL,
+    fetched_at TIMESTAMPTZ NOT NULL,
+    source_metadata_json VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (instrument_id, provider, trading_date, adjustment_mode),
+    FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+);
+
+CREATE TABLE IF NOT EXISTS market_data_runs (
+    run_id VARCHAR PRIMARY KEY,
+    provider VARCHAR NOT NULL,
+    instrument_id VARCHAR NOT NULL,
+    requested_start_date DATE NOT NULL,
+    requested_end_date DATE NOT NULL,
+    adjustment_modes_json VARCHAR NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    status VARCHAR NOT NULL,
+    raw_row_count INTEGER NOT NULL DEFAULT 0,
+    inserted_row_count INTEGER NOT NULL DEFAULT 0,
+    updated_row_count INTEGER NOT NULL DEFAULT 0,
+    unchanged_row_count INTEGER NOT NULL DEFAULT 0,
+    rejected_row_count INTEGER NOT NULL DEFAULT 0,
+    error_summary VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_instruments_symbol ON market_instruments(canonical_symbol);
+CREATE INDEX IF NOT EXISTS idx_market_instruments_cik ON market_instruments(issuer_cik);
+CREATE INDEX IF NOT EXISTS idx_market_mappings_instrument ON market_symbol_mappings(instrument_id);
+CREATE INDEX IF NOT EXISTS idx_market_mappings_provider_symbol
+    ON market_symbol_mappings(provider, provider_symbol);
+CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_price_bars(trading_date);
+CREATE INDEX IF NOT EXISTS idx_daily_bars_available_at ON daily_price_bars(available_at);
+CREATE INDEX IF NOT EXISTS idx_market_data_runs_instrument ON market_data_runs(instrument_id);
 """
 
 
@@ -182,6 +268,7 @@ class Database:
         """Create tables and indexes idempotently."""
         with self.session() as conn:
             conn.execute(SCHEMA_SQL)
+            _ensure_market_symbol_mapping_schema(conn)
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, notes)
@@ -190,7 +277,95 @@ class Database:
                 """,
                 ["0.2.0", "Canonical statements and fundamental factors"],
             )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "0.3.0-a",
+                    "Market-data foundation: prices, instruments, market cap",
+                ],
+            )
+            # Preserve legacy label if an earlier uncommitted draft used it.
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "0.3.0a",
+                    "Legacy alias for 0.3.0-a market-data foundation",
+                ],
+            )
         logger.info("Initialized DuckDB schema at %s", self.path)
+
+
+def _table_columns(conn: duckdb.DuckDBPyConnection, table: str) -> set[str]:
+    rows = conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = ?
+        """,
+        [table],
+    ).fetchall()
+    return {str(r[0]).lower() for r in rows}
+
+
+def _ensure_market_symbol_mapping_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Upgrade pre-mapping_id market_symbol_mappings without destroying data."""
+    tables = {str(r[0]) for r in conn.execute("SHOW TABLES").fetchall()}
+    if "market_symbol_mappings" not in tables:
+        return
+    cols = _table_columns(conn, "market_symbol_mappings")
+    if "mapping_id" in cols:
+        return
+    conn.execute(
+        """
+        CREATE TABLE market_symbol_mappings_v03a (
+            mapping_id VARCHAR PRIMARY KEY,
+            instrument_id VARCHAR NOT NULL,
+            provider VARCHAR NOT NULL,
+            provider_symbol VARCHAR NOT NULL,
+            valid_from DATE,
+            valid_to DATE,
+            is_primary BOOLEAN NOT NULL DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL,
+            FOREIGN KEY (instrument_id) REFERENCES market_instruments(instrument_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO market_symbol_mappings_v03a (
+            mapping_id, instrument_id, provider, provider_symbol,
+            valid_from, valid_to, is_primary, created_at, updated_at
+        )
+        SELECT
+            md5(provider || ':' || provider_symbol || ':' || instrument_id),
+            instrument_id, provider, provider_symbol,
+            valid_from, valid_to, is_primary, created_at, updated_at
+        FROM market_symbol_mappings
+        """
+    )
+    conn.execute("DROP TABLE market_symbol_mappings")
+    conn.execute("ALTER TABLE market_symbol_mappings_v03a RENAME TO market_symbol_mappings")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_market_mappings_instrument
+        ON market_symbol_mappings(instrument_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_market_mappings_provider_symbol
+        ON market_symbol_mappings(provider, provider_symbol)
+        """
+    )
 
 
 def initialize_database(path: Path) -> Database:
