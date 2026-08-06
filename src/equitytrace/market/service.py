@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from datetime import date, timedelta
 
@@ -196,15 +195,6 @@ class MarketDataService:
                     end_date,
                     mode,
                 )
-                try:
-                    instrument = self._repo.update_market_metadata(
-                        instrument.instrument_id,
-                        currency=response.currency,
-                        exchange_timezone=response.exchange_timezone,
-                    )
-                except ValueError as exc:
-                    raise MarketDataError(str(exc)) from exc
-
                 mode_raw, mode_rejected, bars = self._prepare_bars(
                     response=response,
                     instrument_id=instrument.instrument_id,
@@ -214,6 +204,17 @@ class MarketDataService:
                     start_date=start_date,
                     end_date=end_date,
                 )
+                # Confirm currency/timezone only after at least one bar validates.
+                # Placeholder defaults must not be locked in by an all-rejected fetch.
+                if bars:
+                    try:
+                        instrument = self._repo.update_market_metadata(
+                            instrument.instrument_id,
+                            currency=response.currency,
+                            exchange_timezone=response.exchange_timezone,
+                        )
+                    except ValueError as exc:
+                        raise MarketDataError(str(exc)) from exc
                 totals["raw"] += mode_raw
                 totals["rejected"] += mode_rejected
                 if mode_rejected:
@@ -287,7 +288,7 @@ class MarketDataService:
             if e is not None:
                 overall_end = e if overall_end is None else max(overall_end, e)
 
-        with contextlib.suppress(Exception):
+        try:
             self._repo.complete_market_data_run(
                 run_id,
                 status=status,
@@ -298,6 +299,12 @@ class MarketDataService:
                 rejected_row_count=totals["rejected"],
                 error_summary=error_summary,
             )
+        except Exception as exc:
+            logger.exception("Failed to finalize market-data run %s", run_id)
+            finish_error = f"run_finalize_failed:{exc}"
+            error_summary = f"{error_summary}; {finish_error}" if error_summary else finish_error
+            if status is MarketDataRunStatus.SUCCESS:
+                status = MarketDataRunStatus.PARTIAL
 
         return MarketDataIngestionResult(
             run_id=run_id,

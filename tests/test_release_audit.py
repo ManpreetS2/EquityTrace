@@ -232,3 +232,211 @@ def test_get_archived_submissions_rejects_traversal(
     ):
         client.get_archived_submissions("../evil.json")
     assert seen == []
+
+
+def test_date_only_acceptance_uses_filing_eod_fallback() -> None:
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    from equitytrace.sec.normalization import (
+        parse_acceptance_datetime,
+        resolve_available_at,
+    )
+
+    eastern = ZoneInfo("America/New_York")
+    for raw in ("2024-02-15", "20240215"):
+        assert parse_acceptance_datetime(raw) is None
+        available = resolve_available_at(
+            acceptance_datetime=None,
+            filing_date=date(2024, 2, 15),
+        )
+        assert available == datetime(2024, 2, 15, 23, 59, 59, tzinfo=eastern).astimezone(UTC)
+
+    # Explicit midnight with a clock token remains Eastern wall time.
+    parsed = parse_acceptance_datetime("2024-02-15 00:00:00")
+    assert parsed == datetime(2024, 2, 15, 5, 0, 0, tzinfo=UTC)
+
+
+def test_cross_window_within_window_conflict_evicts_earlier_keep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from equitytrace.market.providers import twelve_data as td
+    from equitytrace.market.providers.twelve_data import TwelveDataProvider
+
+    settings = _settings(tmp_path, monkeypatch, EQUITYTRACE_ENABLE_CACHE="false")
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "meta": {"currency": "USD", "exchange_timezone": "America/New_York"},
+                    "status": "ok",
+                    "values": [
+                        {
+                            "datetime": "2020-01-02",
+                            "open": "10",
+                            "high": "10",
+                            "low": "10",
+                            "close": "10",
+                            "volume": "1",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "meta": {"currency": "USD", "exchange_timezone": "America/New_York"},
+                "status": "ok",
+                "values": [
+                    {
+                        "datetime": "2020-01-02",
+                        "open": "10",
+                        "high": "10",
+                        "low": "10",
+                        "close": "11",
+                        "volume": "1",
+                    },
+                    {
+                        "datetime": "2020-01-02",
+                        "open": "10",
+                        "high": "10",
+                        "low": "10",
+                        "close": "12",
+                        "volume": "1",
+                    },
+                    {
+                        "datetime": "2020-01-03",
+                        "open": "10",
+                        "high": "10",
+                        "low": "10",
+                        "close": "10",
+                        "volume": "1",
+                    },
+                ],
+            },
+        )
+
+    orig = td.date_windows
+    td.date_windows = lambda start, end, window_days: [  # type: ignore[misc]
+        (date(2020, 1, 1), date(2020, 1, 2)),
+        (date(2020, 1, 2), date(2020, 1, 5)),
+    ]
+    try:
+        with TwelveDataProvider(settings, transport=httpx.MockTransport(handler)) as provider:
+            response = provider.fetch_daily_bars(
+                "X",
+                date(2020, 1, 1),
+                date(2020, 1, 5),
+                PriceAdjustmentMode.NONE,
+            )
+    finally:
+        td.date_windows = orig
+
+    assert [b.trading_date for b in response.bars] == [date(2020, 1, 3)]
+    assert response.conflicting_duplicate_dates == (date(2020, 1, 2),)
+
+
+def test_multi_class_unavailable_without_instrument_cik_link(tmp_path: Path) -> None:
+    from equitytrace.market.market_cap import MarketCapService
+    from equitytrace.market.models import make_instrument_id
+    from equitytrace.models import Issuer, Security
+    from equitytrace.repositories.issuers import IssuersRepository
+    from equitytrace.repositories.market import MarketRepository
+    from equitytrace.repositories.securities import SecuritiesRepository
+
+    db = initialize_database(tmp_path / "multi.duckdb")
+    with db.session() as conn:
+        IssuersRepository(conn).upsert(Issuer(cik="0001652044", legal_name="Alphabet"))
+        SecuritiesRepository(conn).upsert_many(
+            [
+                Security(ticker="GOOGL", cik="0001652044", is_primary=True),
+                Security(ticker="GOOG", cik="0001652044", is_primary=False),
+            ]
+        )
+        repo = MarketRepository(conn)
+        instrument = repo.get_or_create_instrument("GOOGL", issuer_cik=None)
+        assert instrument.issuer_cik is None
+        assert instrument.instrument_id == make_instrument_id("GOOGL")
+        result = MarketCapService(conn).get_market_cap("GOOGL", date(2023, 1, 3))
+    assert result.market_cap is None
+    assert result.unavailable_reason == "multi_class_issuer_ambiguous"
+
+
+def test_inverted_mapping_interval_rejected(tmp_path: Path) -> None:
+    from equitytrace.market.models import MarketSymbolMapping, make_instrument_id
+    from equitytrace.repositories.market import MarketRepository
+
+    db = initialize_database(tmp_path / "map.duckdb")
+    with db.session() as conn:
+        repo = MarketRepository(conn)
+        instrument = repo.get_or_create_instrument("AAA")
+        with pytest.raises(ValueError, match=r"valid_from .* is after valid_to"):
+            repo.upsert_symbol_mapping(
+                MarketSymbolMapping(
+                    instrument_id=instrument.instrument_id,
+                    provider=MarketDataProviderName.TWELVE_DATA,
+                    provider_symbol="AAA",
+                    valid_from=date(2024, 1, 10),
+                    valid_to=date(2024, 1, 1),
+                    is_primary=True,
+                )
+            )
+        assert instrument.instrument_id == make_instrument_id("AAA")
+
+
+def test_cli_failed_ingest_exits_nonzero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from equitytrace.cli import app
+    from equitytrace.market.models import MarketDataIngestionResult, MarketDataRunStatus
+    from equitytrace.market.service import MarketDataService
+
+    settings = _settings(tmp_path, monkeypatch)
+    initialize_database(settings.database_path)
+
+    def fake_ingest(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        del self, args, kwargs
+        return MarketDataIngestionResult(
+            run_id="run",
+            provider=MarketDataProviderName.TWELVE_DATA,
+            instrument_id="i",
+            canonical_symbol="ZZZ",
+            provider_symbol="ZZZ",
+            requested_start_date=date(2023, 1, 1),
+            requested_end_date=date(2023, 1, 31),
+            adjustment_modes=(PriceAdjustmentMode.NONE,),
+            status=MarketDataRunStatus.FAILED,
+            raw_row_count=3,
+            inserted_row_count=0,
+            updated_row_count=0,
+            unchanged_row_count=0,
+            rejected_row_count=3,
+            stored_start_date=None,
+            stored_end_date=None,
+            error_summary=None,
+            warnings=(),
+        )
+
+    monkeypatch.setattr(MarketDataService, "ingest", fake_ingest)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "market",
+            "ingest",
+            "ZZZ",
+            "--start",
+            "2023-01-01",
+            "--end",
+            "2023-01-31",
+            "--raw-only",
+            "--database",
+            str(settings.database_path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "failed" in result.output.lower() or "Error:" in result.output

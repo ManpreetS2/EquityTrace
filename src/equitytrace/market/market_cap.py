@@ -53,8 +53,17 @@ class MarketCapService:
             )
 
         # Multi-class ambiguity: refuse falsely precise class-level market caps.
-        if instrument.issuer_cik:
-            sec_count = self._repo.count_securities_for_issuer(instrument.issuer_cik)
+        # Resolve the issuer even when the instrument row lacks issuer_cik yet.
+        issuer_cik = instrument.issuer_cik
+        if issuer_cik is None:
+            row = self._conn.execute(
+                "SELECT cik FROM securities WHERE ticker = ? LIMIT 1",
+                [symbol],
+            ).fetchone()
+            if row is not None:
+                issuer_cik = str(row[0])
+        if issuer_cik:
+            sec_count = self._repo.count_securities_for_issuer(issuer_cik)
             if sec_count > 1:
                 return MarketCapResult(
                     ticker=symbol,
@@ -62,7 +71,7 @@ class MarketCapService:
                     unavailable_reason="multi_class_issuer_ambiguous",
                     warnings=(
                         "multi_class_issuer:"
-                        f"issuer {instrument.issuer_cik} has {sec_count} securities; "
+                        f"issuer {issuer_cik} has {sec_count} securities; "
                         "refusing to multiply one class price by potentially aggregate shares",
                     ),
                 )

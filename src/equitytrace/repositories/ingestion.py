@@ -50,9 +50,12 @@ class IngestionRepository:
 
     def ingest_ticker(self, client: SecClient, ticker: str) -> IngestResult:
         """
-        Resolve, fetch, normalize, and atomically store one company.
+        Resolve, fetch, normalize, and store one company.
 
-        If normalization or insertion fails, no partial issuer data is committed.
+        Persistence uses per-CIK DELETE+INSERT for filings/facts. Large live
+        Company Facts payloads intentionally avoid a multi-statement DuckDB
+        transaction; a mid-persist failure may leave issuer/security rows that a
+        successful re-ingest repairs. Re-ingestion remains idempotent.
         """
         started = time.perf_counter()
         started_at = datetime.now(UTC)

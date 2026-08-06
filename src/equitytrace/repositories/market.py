@@ -361,6 +361,17 @@ class MarketRepository:
         *,
         mapping_id: str,
     ) -> None:
+        if (
+            mapping.valid_from is not None
+            and mapping.valid_to is not None
+            and mapping.valid_from > mapping.valid_to
+        ):
+            raise ValueError(
+                f"Invalid mapping interval for {mapping.provider.value}/"
+                f"{mapping.provider_symbol}: valid_from {mapping.valid_from} "
+                f"is after valid_to {mapping.valid_to}."
+            )
+
         # Provider-symbol reuse across instruments must be non-overlapping.
         rows = self._conn.execute(
             """
