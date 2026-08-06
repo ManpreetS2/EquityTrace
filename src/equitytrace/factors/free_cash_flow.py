@@ -72,8 +72,9 @@ class FreeCashFlowYieldFactor:
     """
     Trailing / period FCF yield = free_cash_flow / market_cap.
 
-    Market capitalization is not stored in v0.1/v0.2. Callers must supply it
-    explicitly. When omitted, returns an unavailable result (not an error).
+    Callers must supply market capitalization explicitly in v0.3a. When omitted,
+    returns an unavailable result (not an error). Native wiring to stored
+    market-cap series is planned for v0.3b.
     """
 
     name: str = "fcf_yield"
@@ -108,7 +109,7 @@ class FreeCashFlowYieldFactor:
                 reason=(
                     "Market capitalization not supplied. "
                     "FCF yield requires an explicit market_cap argument "
-                    "(market prices arrive in v0.3)."
+                    "(native market-cap wiring arrives in v0.3b)."
                 ),
                 inputs=inputs,
                 source_filings=filings,

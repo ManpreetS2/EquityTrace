@@ -211,6 +211,8 @@ class MarketDataService:
                     provider_enum=provider_enum,
                     mode=mode,
                     today=today,
+                    start_date=start_date,
+                    end_date=end_date,
                 )
                 totals["raw"] += mode_raw
                 totals["rejected"] += mode_rejected
@@ -326,6 +328,8 @@ class MarketDataService:
         provider_enum: MarketDataProviderName,
         mode: PriceAdjustmentMode,
         today: date,
+        start_date: date,
+        end_date: date,
     ) -> tuple[int, int, list[DailyPriceBar]]:
         """Validate provider bars and return (raw_count, rejected_count, accepted_bars)."""
         rejected = response.malformed_row_count + response.duplicate_row_count
@@ -341,6 +345,8 @@ class MarketDataService:
             )
             if provider_bar.trading_date > today:
                 reasons = [*reasons, "future_trading_date"]
+            if not (start_date <= provider_bar.trading_date <= end_date):
+                reasons = [*reasons, "trading_date_outside_request"]
             if reasons:
                 rejected += 1
                 continue
