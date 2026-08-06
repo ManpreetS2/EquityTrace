@@ -115,7 +115,7 @@ Accrual ratio definition: earnings accruals relative to average assets. Lower
 values mean cash flow closer to net income.
 
 FCF yield returns an unavailable result when market capitalization is not
-explicitly supplied. Market prices belong to v0.3.
+explicitly supplied. Native market-cap wiring for FCF yield is planned for v0.3b.
 
 ## Technology stack
 
@@ -161,6 +161,7 @@ Preferred names:
 | `EQUITYTRACE_SEC_ORGANIZATION` | Organization name in User-Agent (default: `EquityTrace Development`) |
 | `EQUITYTRACE_DATABASE_PATH` | DuckDB path (default: `data/equitytrace.duckdb`) |
 | `EQUITYTRACE_CACHE_DIR` | Optional HTTP cache directory |
+| `EQUITYTRACE_ENABLE_CACHE` | Enable SEC/market response caching (default: true) |
 | `EQUITYTRACE_HTTP_TIMEOUT_SECONDS` | Request timeout |
 | `EQUITYTRACE_MAX_REQUESTS_PER_SECOND` | Rate limit (< 10) |
 | `EQUITYTRACE_MARKET_DATA_PROVIDER` | Market provider id (default: `twelve_data`) |
@@ -231,8 +232,9 @@ uv run mypy src
 uv run pytest
 ```
 
-All SEC tests run offline against fixtures under `tests/fixtures/sec/` or
-fictional seeded facts.
+The offline suite currently contains **228** tests (SEC/financials plus market-data).
+All SEC and market-provider tests run against fixtures or mocks under
+`tests/fixtures/` — no live SEC or Twelve Data network access is required.
 
 ## Market data (v0.3a)
 
@@ -281,7 +283,8 @@ SEC-only commands continue to work without a market-data API key.
   securities table has no share-class/active flag, so detection is conservative
 - Optional market response cache has no TTL; disable cache to force fresh fetches
 - Live Twelve Data responses are not exercised in CI (offline fixtures only)
-  period end date and duration heuristics; unusual fiscal calendars may still warn
+- Period selection uses period-end date and duration heuristics; unusual fiscal
+  calendars may still warn
 - Q4 is not casually derived from annual − nine-month YTD
 - Large live Company Facts ingestions use per-CIK DELETE+INSERT without a
   multi-statement DuckDB transaction (re-ingest is idempotent; mid-failure can

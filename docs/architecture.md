@@ -101,7 +101,8 @@ to earnings scores better). Ranking ties share competition rank and percentile.
 ## Offline testing
 
 `httpx.MockTransport` serves fixtures from `tests/fixtures/sec/`. Statement and
-factor tests use fictional seeded facts. No live SEC calls in CI.
+factor tests use fictional seeded facts. Market-provider tests use mock
+transports or injected providers. No live SEC or Twelve Data calls in CI.
 
 
 9. **Market data (`equitytrace.market`)**
