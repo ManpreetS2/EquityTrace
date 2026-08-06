@@ -49,8 +49,10 @@ filters with:
 available_at <= as_of
 ```
 
-Acceptance timestamps are interpreted in U.S. Eastern time and stored as
-timezone-aware UTC. If acceptance time is missing, EquityTrace uses a
+Acceptance timestamps with an explicit zone (including SEC ``Z`` / offset forms)
+are treated as absolute instants and stored as timezone-aware UTC. Naive
+timestamps without a zone are interpreted as U.S. Eastern wall time. If
+acceptance time is missing or only a date is provided, EquityTrace uses a
 **conservative** fallback: end of the filing date in Eastern time (not the start
 of that day).
 
@@ -218,6 +220,10 @@ Tables:
 - `schema_migrations`
 - `factor_runs`
 - `factor_values`
+- `market_instruments`
+- `market_symbol_mappings`
+- `daily_price_bars`
+- `market_data_runs`
 
 Existing v0.1 databases migrate by re-running `equitytrace init-db` (additive
 `CREATE IF NOT EXISTS`). Facts use a deterministic `fact_id` so repeated
@@ -232,7 +238,7 @@ uv run mypy src
 uv run pytest
 ```
 
-The offline suite currently contains **228** tests (SEC/financials plus market-data).
+The offline suite currently contains **233** tests (SEC/financials plus market-data).
 All SEC and market-provider tests run against fixtures or mocks under
 `tests/fixtures/` — no live SEC or Twelve Data network access is required.
 
