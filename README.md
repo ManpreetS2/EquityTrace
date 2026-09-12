@@ -76,7 +76,8 @@ Key separations:
 - Raw XBRL concepts ≠ canonical statement concepts
 - Live SEC HTTP client is injectable; tests use offline fixtures
 
-See [docs/architecture.md](docs/architecture.md) and [docs/data-model.md](docs/data-model.md).
+See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation,
+[docs/architecture.md](docs/architecture.md), and [docs/data-model.md](docs/data-model.md).
 
 ## Canonical statements
 
@@ -171,7 +172,7 @@ Preferred names:
 | `EQUITYTRACE_MARKET_DATA_TIMEOUT_SECONDS` | Market HTTP timeout |
 | `EQUITYTRACE_MARKET_DATA_REQUESTS_PER_MINUTE` | Market rate limit |
 | `EQUITYTRACE_MARKET_DATA_MAX_RETRIES` | Transient retry budget |
-| `EQUITYTRACE_MARKET_DATA_CACHE_DIR` | Ignored market response cache (default: `data/cache/market`) |
+| `EQUITYTRACE_MARKET_DATA_CACHE_DIR` | Local market response cache directory (gitignored; default: `data/cache/market`) |
 
 Legacy `FILINGEDGE_*` variables are still accepted temporarily when the matching
 `EQUITYTRACE_*` variable is unset. Prefer the new names; a deprecation warning

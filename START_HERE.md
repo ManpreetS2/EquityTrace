@@ -2,6 +2,9 @@
 
 Exact commands for a new developer on EquityTrace v0.3a.
 
+Repository navigation: [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md). Read that
+map before searching the tree; it names the bounded files for each subsystem.
+
 ## 1. Configure environment
 
 ```bash
