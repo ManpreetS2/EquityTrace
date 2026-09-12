@@ -69,16 +69,15 @@ class FreeCashFlowFactor:
 
 
 class FreeCashFlowYieldFactor:
-    """
-    Trailing / period FCF yield = free_cash_flow / market_cap.
+    """Period FCF yield = free_cash_flow / market capitalization.
 
-    Callers must supply market capitalization explicitly in v0.3a. When omitted,
-    returns an unavailable result (not an error). Native wiring to stored
-    market-cap series is planned for v0.3b.
+    Market cap normally comes from stored PIT market data via FactorEngine.
+    An explicit market_cap argument remains a manual override for tests.
     """
 
     name: str = "fcf_yield"
     ranking_direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better"
+    requires_market_cap: bool = True
 
     def calculate(
         self,
@@ -107,9 +106,8 @@ class FreeCashFlowYieldFactor:
                 as_of=as_of,
                 period=period,
                 reason=(
-                    "Market capitalization not supplied. "
-                    "FCF yield requires an explicit market_cap argument "
-                    "(native market-cap wiring arrives in v0.3b)."
+                    "Market capitalization unavailable. "
+                    "Store point-in-time market data or pass market_cap."
                 ),
                 inputs=inputs,
                 source_filings=filings,

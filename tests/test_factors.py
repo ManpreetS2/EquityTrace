@@ -140,8 +140,11 @@ def test_free_cash_flow_and_yield_without_market_cap(db: Database) -> None:
     assert fcf.valid and fcf.value == pytest.approx(30.0)
     assert yield_result.valid is False
     assert "Market capitalization" in (yield_result.unavailable_reason or "")
-    assert "market_cap_missing" in yield_result.warnings
+    assert "instrument_not_found" in (yield_result.unavailable_reason or "")
     assert with_cap.valid and with_cap.value == pytest.approx(0.1)
+    assert with_cap.market_input is not None
+    assert "manual_market_cap_override" in with_cap.market_input.warnings
+    assert with_cap.market_input.price_provider is None
 
 
 def test_debt_change(db: Database) -> None:

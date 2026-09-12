@@ -440,7 +440,13 @@ def factor_cmd(
     ] = None,
     market_cap: Annotated[
         float | None,
-        typer.Option("--market-cap", help="Optional market cap for FCF yield"),
+        typer.Option(
+            "--market-cap",
+            help=(
+                "Optional market-cap override for valuation factors. "
+                "Stored PIT market cap is used when omitted."
+            ),
+        ),
     ] = None,
     database: Annotated[
         Path | None,
@@ -492,6 +498,18 @@ def factor_cmd(
         table.add_row("Source filings", ", ".join(result.source_filings))
     if result.warnings:
         table.add_row("Warnings", "; ".join(result.warnings))
+    if result.market_input is not None:
+        cap = result.market_input
+        if "manual_market_cap_override" in cap.warnings:
+            table.add_row("Market cap", "manual override (not stored market data)")
+        elif cap.is_available:
+            table.add_row(
+                "Market cap",
+                f"{cap.market_cap} {cap.currency or ''} "
+                f"({cap.price_date_used}, {cap.price_provider})".strip(),
+            )
+        elif cap.unavailable_reason:
+            table.add_row("Market cap", cap.unavailable_reason)
     console.print(table)
     if result.inputs:
         inputs = Table(title="Inputs")
@@ -515,7 +533,13 @@ def factors_cmd(
     ] = None,
     market_cap: Annotated[
         float | None,
-        typer.Option("--market-cap", help="Optional market cap for FCF yield"),
+        typer.Option(
+            "--market-cap",
+            help=(
+                "Optional market-cap override for valuation factors. "
+                "Stored PIT market cap is used when omitted."
+            ),
+        ),
     ] = None,
     database: Annotated[
         Path | None,

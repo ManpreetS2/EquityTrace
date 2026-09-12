@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 from equitytrace.factors.models import FactorResult
 from equitytrace.financials.models import FinancialPeriod, FinancialSnapshot
 from equitytrace.financials.service import FinancialsService
+from equitytrace.market.models import MarketCapResult
 
 
 class Factor(Protocol):
@@ -52,6 +53,7 @@ def invalid_result(
     inputs: dict[str, float | None] | None = None,
     ranking_direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better",
     source_filings: tuple[str, ...] = (),
+    market_input: MarketCapResult | None = None,
 ) -> FactorResult:
     """Build a structured unavailable / invalid factor result."""
     return FactorResult(
@@ -64,6 +66,7 @@ def invalid_result(
         inputs=inputs or {},
         source_filings=source_filings,
         warnings=warnings or ("missing_input",),
+        market_input=market_input,
         valid=False,
         unavailable_reason=reason,
         ranking_direction=ranking_direction,

@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from equitytrace.financials.models import FinancialPeriod
+from equitytrace.market.models import MarketCapResult
 
 
 class FactorResult(BaseModel):
@@ -24,6 +25,7 @@ class FactorResult(BaseModel):
     inputs: dict[str, float | None] = Field(default_factory=dict)
     source_filings: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    market_input: MarketCapResult | None = None
     valid: bool = False
     unavailable_reason: str | None = None
     ranking_direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better"
