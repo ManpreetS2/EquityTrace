@@ -245,9 +245,10 @@ def test_date_only_acceptance_uses_filing_eod_fallback() -> None:
 
     eastern = ZoneInfo("America/New_York")
     for raw in ("2024-02-15", "20240215"):
-        assert parse_acceptance_datetime(raw) is None
+        parsed = parse_acceptance_datetime(raw)
+        assert parsed is None
         available = resolve_available_at(
-            acceptance_datetime=None,
+            acceptance_datetime=parsed,
             filing_date=date(2024, 2, 15),
         )
         assert available == datetime(2024, 2, 15, 23, 59, 59, tzinfo=eastern).astimezone(UTC)
@@ -440,3 +441,41 @@ def test_cli_failed_ingest_exits_nonzero(tmp_path: Path, monkeypatch: pytest.Mon
     )
     assert result.exit_code != 0
     assert "failed" in result.output.lower() or "Error:" in result.output
+
+
+def test_market_run_finalize_failure_is_surfaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    fake = _FakeProvider(
+        DailyBarsResponse(
+            provider=MarketDataProviderName.TWELVE_DATA,
+            provider_symbol="FIN",
+            adjustment_mode=PriceAdjustmentMode.NONE,
+            currency="USD",
+            exchange_timezone="America/New_York",
+            bars=(_bar("2023-01-03"),),
+        )
+    )
+    with db.session() as conn:
+        service = MarketDataService(conn, settings, provider=fake)
+
+        def boom(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(service._repo, "complete_market_data_run", boom)
+        result = service.ingest(
+            "FIN",
+            start_date=date(2023, 1, 1),
+            end_date=date(2023, 1, 31),
+            modes=[PriceAdjustmentMode.NONE],
+        )
+        stored = conn.execute("SELECT COUNT(*) FROM daily_price_bars").fetchone()
+
+    assert result.status is not MarketDataRunStatus.SUCCESS
+    assert result.error_summary is not None
+    assert "run_finalize_failed" in result.error_summary
+    assert "disk full" in result.error_summary
+    assert stored is not None and int(stored[0]) == 1
