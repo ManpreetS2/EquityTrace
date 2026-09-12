@@ -6,6 +6,7 @@ import json
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import duckdb
 
@@ -216,6 +217,10 @@ class MarketRepository:
             raise ValueError("currency must not be blank.")
         if not tz_norm:
             raise ValueError("exchange_timezone must not be blank.")
+        try:
+            ZoneInfo(tz_norm)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Unknown exchange timezone '{tz_norm}'.") from exc
 
         if instrument.market_metadata_confirmed:
             if instrument.currency != currency_norm or instrument.exchange_timezone != tz_norm:
@@ -356,6 +361,17 @@ class MarketRepository:
         *,
         mapping_id: str,
     ) -> None:
+        if (
+            mapping.valid_from is not None
+            and mapping.valid_to is not None
+            and mapping.valid_from > mapping.valid_to
+        ):
+            raise ValueError(
+                f"Invalid mapping interval for {mapping.provider.value}/"
+                f"{mapping.provider_symbol}: valid_from {mapping.valid_from} "
+                f"is after valid_to {mapping.valid_to}."
+            )
+
         # Provider-symbol reuse across instruments must be non-overlapping.
         rows = self._conn.execute(
             """

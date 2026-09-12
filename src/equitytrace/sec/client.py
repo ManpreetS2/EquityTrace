@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -26,6 +28,7 @@ COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 COMPANY_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 SUBMISSIONS_ARCHIVE_BASE = "https://data.sec.gov/submissions/"
+_ARCHIVE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.json$")
 
 
 class SecClientError(RuntimeError):
@@ -136,10 +139,11 @@ class SecClient:
 
     def get_archived_submissions(self, filename: str) -> dict[str, Any]:
         """Fetch an archived submissions file referenced by the main response."""
-        url = f"{SUBMISSIONS_ARCHIVE_BASE}{filename.lstrip('/')}"
+        safe_name = sanitize_archive_filename(filename)
+        url = f"{SUBMISSIONS_ARCHIVE_BASE}{safe_name}"
         data = self.get_json(url)
         if not isinstance(data, dict):
-            raise SecClientError(f"Unexpected archived submissions payload: {filename}")
+            raise SecClientError(f"Unexpected archived submissions payload: {safe_name}")
         return data
 
     def get_company_facts(self, cik: str) -> dict[str, Any]:
@@ -199,8 +203,30 @@ class SecClient:
 
     def _write_cache(self, url: str, payload: Any) -> None:
         path = self._cache_path(url)
+        tmp = path.with_suffix(".tmp")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(path)
         except OSError:
-            logger.warning("Failed to write cache file %s", path)
+            logger.warning("Failed to write cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+
+def sanitize_archive_filename(filename: str) -> str:
+    """
+    Accept only a basename-style SEC archive filename.
+
+    Rejects path separators, ``..`` traversal, and unexpected characters so a
+    malformed submissions payload cannot redirect the client outside
+    ``/submissions/``.
+    """
+    text = str(filename or "").strip()
+    if not text:
+        raise SecClientError("Archived submissions filename must not be empty.")
+    if text != Path(text).name or "/" in text or "\\" in text or ".." in text:
+        raise SecClientError(f"Refusing unsafe archived submissions filename: {filename!r}")
+    if not _ARCHIVE_FILENAME_RE.fullmatch(text):
+        raise SecClientError(f"Refusing unexpected archived submissions filename: {filename!r}")
+    return text

@@ -59,6 +59,10 @@ def parse_acceptance_datetime(value: str | None) -> datetime | None:
     if parsed is not None:
         if parsed.tzinfo is not None:
             return parsed.astimezone(UTC)
+        # Date-only strings (YYYY-MM-DD / YYYYMMDD) are ambiguous: do not assume
+        # midnight Eastern. Defer to resolve_available_at's filing-date EOD fallback.
+        if _is_date_only_acceptance(text, parsed):
+            return None
         return parsed.replace(tzinfo=EASTERN).astimezone(UTC)
 
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
@@ -89,6 +93,19 @@ def _has_explicit_zone(text: str) -> bool:
         return True
     # Offset after the date portion, e.g. ...+00:00 or ...-05:00
     return len(text) >= 19 and ("+" in text[10:] or text.count("-") >= 3)
+
+
+def _is_date_only_acceptance(text: str, parsed: datetime) -> bool:
+    """Return True when *text* carries a calendar date but no clock time."""
+    if parsed.hour or parsed.minute or parsed.second or parsed.microsecond:
+        return False
+    compact = text.replace("-", "").replace(":", "").replace("T", "").replace(" ", "")
+    if compact.endswith(("Z", "z")):
+        return False
+    # Pure YYYYMMDD / YYYY-MM-DD with no time tokens.
+    if ":" in text or "T" in text.upper() or " " in text.strip():
+        return False
+    return len(compact) == 8 and compact.isdigit()
 
 
 def _normalize_iso_zone(text: str) -> str:

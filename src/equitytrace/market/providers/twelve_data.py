@@ -202,7 +202,14 @@ class TwelveDataProvider:
             malformed_total += response.malformed_row_count
             duplicate_total += response.duplicate_date_count
             duplicate_row_total += response.duplicate_row_count
+            newly_conflicting = set(response.conflicting_duplicate_dates) - conflicting_dates
             conflicting_dates.update(response.conflicting_duplicate_dates)
+            # A later window may discover within-window conflicts for a date that
+            # an earlier window already kept. Evict those dates from the merge.
+            for conflict_day in newly_conflicting:
+                if conflict_day in merged:
+                    del merged[conflict_day]
+                    duplicate_row_total += 1
 
             if populated:
                 if currency is None:

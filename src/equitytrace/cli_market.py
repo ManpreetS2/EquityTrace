@@ -139,6 +139,12 @@ def market_ingest(
     console.print(table)
     if result.warnings:
         console.print("[yellow]Warnings:[/yellow] " + "; ".join(result.warnings))
+    if result.status.value == "failed":
+        _user_error(
+            result.error_summary
+            or f"Market ingest failed for {result.canonical_symbol} "
+            f"(rejected={result.rejected_row_count}, inserted={result.inserted_row_count})."
+        )
     if result.error_summary:
         _user_error(result.error_summary)
 
