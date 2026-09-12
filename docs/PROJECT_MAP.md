@@ -11,10 +11,11 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `0.3.0.dev0` |
-| Release track | v0.3a market-data foundation + release-readiness hardening |
+| Package | `equitytrace` `0.3.0` |
+| Release | v0.3.0 |
+| v0.3a | complete |
+| Next milestone | v0.3b — valuation, momentum, and risk |
 | Default branch | `main` |
-| Hardening branch / PR | `audit/v0.3a-release-readiness` / PR #3 |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
 | Not present today | `src/equitytrace/portfolio/` (v0.3c, planned only) |
@@ -277,12 +278,14 @@ v0.3a correctness still concentrates here:
 
 ## Roadmap touchpoints
 
-See `docs/roadmap.md`. Do not implement later tracks in a v0.3a PR.
+See `docs/roadmap.md`. v0.3a is complete in v0.3.0. Do not begin v0.3b in a
+release-maintenance change.
 
 ### v0.3a
 
-Market-data foundation (this track): provider-neutral daily OHLCV, Twelve Data,
-raw vs adjusted rows, instruments/mappings, PIT shares, market cap, market CLI.
+Market-data foundation (**completed** in v0.3.0): provider-neutral daily OHLCV,
+Twelve Data, raw vs adjusted rows, instruments/mappings, PIT shares, market cap,
+market CLI.
 
 ### v0.3b
 
@@ -295,7 +298,7 @@ top-level package required):
 
 ### v0.3c
 
-**Does not exist yet.** Planned package boundary (do not create in v0.3a):
+**Does not exist yet.** Planned package boundary (do not create in v0.3.0):
 
 ```text
 src/equitytrace/portfolio/

@@ -1,6 +1,6 @@
 [project]
 name = "equitytrace"
-version = "0.3.0.dev0"
+version = "0.3.0"
 description = "Transparent stock research backed by filings, factors, and historical evidence"
 readme = "README.md"
 requires-python = ">=3.12"
