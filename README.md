@@ -9,11 +9,14 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **v0.3a** (market-data foundation on top of v0.2) builds on the v0.1 EDGAR ingestion pipeline (historically
-published as FilingEdge): resolve tickers to CIKs, retrieve submissions and XBRL
-Company Facts, normalize them into structured records, store them in DuckDB,
-assemble comparable financial statements, and calculate point-in-time-safe
-factors.
+Version **v0.3.0** is the v0.3a market-data foundation on top of v0.2. It builds
+on the v0.1 EDGAR ingestion pipeline (historically published as FilingEdge):
+resolve tickers to CIKs, retrieve submissions and XBRL Company Facts, normalize
+them into structured records, store them in DuckDB, assemble comparable
+financial statements, calculate point-in-time-safe factors, and ingest
+historical daily market data with historically safe market-cap calculations.
+
+See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
 EquityTrace does **not** predict stock prices and does **not** provide
 personalized investment advice.
@@ -274,7 +277,7 @@ uv run equitytrace market cap-series AAPL --start 2022-01-01 --end 2023-12-31 --
 
 SEC-only commands continue to work without a market-data API key.
 
-## Current limitations (v0.3a)
+## Current limitations (v0.3.0 / v0.3a)
 
 - No valuation multiples, momentum, volatility, beta, or drawdowns (v0.3b)
 - No portfolios, rebalancing, or backtests (v0.3c)
@@ -304,8 +307,8 @@ SEC-only commands continue to work without a market-data API key.
 
 See [docs/roadmap.md](docs/roadmap.md).
 
-- **v0.3a** — Market data foundation (this release track)
-- **v0.3b** — Valuation, momentum, and risk
+- **v0.3.0 / v0.3a** — Market data foundation (**completed**)
+- **v0.3b** — Valuation, momentum, and risk (next)
 - **v0.3c** — Portfolio construction and backtesting
 - **v1.0** — Strategy builder and research interface
 

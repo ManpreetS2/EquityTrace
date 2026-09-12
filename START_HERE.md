@@ -1,6 +1,6 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace v0.3a.
+Exact commands for a new developer on EquityTrace v0.3.0 (v0.3a market-data foundation).
 
 Repository navigation: [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md). Read that
 map before searching the tree; it names the bounded files for each subsystem.
