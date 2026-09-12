@@ -7,7 +7,7 @@ import json
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -238,6 +238,56 @@ class MarketCapResult(BaseModel):
     @property
     def is_available(self) -> bool:
         return self.market_cap is not None
+
+
+class MarketAnalyticsResult(BaseModel):
+    """Inspectable result for a stored-price market-window metric."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    metric: str
+    value: float | None
+    as_of: datetime
+    valid: bool = False
+    unavailable_reason: str | None = None
+    window_start: date | None = None
+    window_end: date | None = None
+    observation_count: int = 0
+    provider: MarketDataProviderName = MarketDataProviderName.TWELVE_DATA
+    adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.ALL
+    benchmark: str | None = None
+    warnings: tuple[str, ...] = ()
+    first_trading_date: date | None = None
+    last_trading_date: date | None = None
+    latest_available_at: datetime | None = None
+    fetched_at_min: datetime | None = None
+    fetched_at_max: datetime | None = None
+    ranking_direction: Literal["higher_is_better", "lower_is_better"] | None = None
+
+
+class RankedMarketMetricResult(BaseModel):
+    """A market metric result with cross-sectional rank metadata."""
+
+    model_config = ConfigDict(frozen=True)
+
+    result: MarketAnalyticsResult
+    rank: int | None = None
+    percentile: float | None = None
+
+
+class MarketMetricRankingResult(BaseModel):
+    """Cross-sectional ranking of a market-window metric."""
+
+    model_config = ConfigDict(frozen=True)
+
+    metric: str
+    as_of: datetime
+    ranking_direction: Literal["higher_is_better", "lower_is_better"]
+    rows: tuple[RankedMarketMetricResult, ...]
+    valid_count: int
+    excluded: tuple[tuple[str, str], ...] = ()
+    benchmark: str | None = None
 
 
 class MarketCapSeriesPoint(BaseModel):
