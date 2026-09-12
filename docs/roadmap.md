@@ -34,13 +34,16 @@
 * SPY / ETF benchmark price support
 * CLI: `market ingest`, `market prices`, `market cap`, `market cap-series`
 
-### v0.3b — Valuation, momentum, and risk (next)
+### v0.3b — Valuation, momentum, and risk (this branch)
 
-* Native FCF yield using stored market cap
+* Native FCF yield using stored PIT market cap
 * P/E, price-to-sales, price-to-book
-* Momentum factors
-* Volatility and beta
-* Drawdown analytics
+* 12-1 momentum; 1y volatility, beta, and max drawdown
+* PIT-safe market metric ranking (beta has no default direction)
+* CLI: `market analytics`, `market rank-metric`
+* Formulas: `docs/metrics.md`
+
+Not released. Package version is `0.3.1.dev0`.
 
 ### v0.3c — Portfolio construction and backtesting
 

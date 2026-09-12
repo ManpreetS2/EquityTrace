@@ -9,12 +9,14 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **v0.3.0** is the v0.3a market-data foundation on top of v0.2. It builds
-on the v0.1 EDGAR ingestion pipeline (historically published as FilingEdge):
-resolve tickers to CIKs, retrieve submissions and XBRL Company Facts, normalize
-them into structured records, store them in DuckDB, assemble comparable
-financial statements, calculate point-in-time-safe factors, and ingest
-historical daily market data with historically safe market-cap calculations.
+Version **0.3.1.dev0** is unreleased v0.3b work on top of the v0.3.0 market-data
+foundation: native PIT valuation factors plus stored-price momentum and risk
+metrics. It still builds on the v0.1 EDGAR ingestion pipeline (historically
+published as FilingEdge): resolve tickers to CIKs, retrieve submissions and XBRL
+Company Facts, normalize them into structured records, store them in DuckDB,
+assemble comparable financial statements, calculate point-in-time-safe factors,
+and ingest historical daily market data with historically safe market-cap
+calculations.
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
@@ -111,7 +113,10 @@ exist — EquityTrace does not invent missing facts.
 | `revenue_growth` | YoY revenue growth | higher better |
 | `operating_margin_change` | YoY operating-margin change | higher better |
 | `free_cash_flow` | OCF − CapEx | higher better |
-| `fcf_yield` | FCF / market cap (market cap must be supplied) | higher better |
+| `fcf_yield` | FCF / PIT market cap (optional `--market-cap` override) | higher better |
+| `price_to_earnings` | FY market cap / net income (quarterly unavailable) | lower better |
+| `price_to_sales` | FY market cap / revenue (quarterly unavailable) | lower better |
+| `price_to_book` | market cap / stockholders' equity | lower better |
 | `debt_change` | YoY total-debt change | lower better |
 | `roa` | NI / average total assets | higher better |
 | `accrual_ratio` | (NI − OCF) / average assets | lower better |
@@ -120,8 +125,8 @@ exist — EquityTrace does not invent missing facts.
 Accrual ratio definition: earnings accruals relative to average assets. Lower
 values mean cash flow closer to net income.
 
-FCF yield returns an unavailable result when market capitalization is not
-explicitly supplied. Native market-cap wiring for FCF yield is planned for v0.3b.
+FCF yield, P/E, P/S, and P/B use stored PIT market cap by default. Formulas and
+unavailable conditions are in [docs/metrics.md](docs/metrics.md).
 
 ## Technology stack
 
@@ -203,10 +208,14 @@ uv run equitytrace facts-as-of AAPL --date 2024-01-15
 uv run equitytrace statements AAPL --period FY2023
 uv run equitytrace statements AAPL --period Q3-2023 --as-of 2024-02-01
 uv run equitytrace factor AAPL revenue-growth --period FY2023
+uv run equitytrace factor AAPL fcf-yield --period FY2023 --as-of 2024-02-01
 uv run equitytrace factors AAPL --period FY2023
-uv run equitytrace rank --tickers AAPL,MSFT,GOOGL --factor revenue-growth --period FY2023
+uv run equitytrace rank --tickers AAPL,MSFT,GOOGL --factor price-to-book --period FY2023
 
 uv run equitytrace db-info
+uv run equitytrace market ingest AAPL --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market analytics AAPL --as-of 2024-12-31 --benchmark SPY
+uv run equitytrace market rank-metric momentum_12_1 AAPL MSFT NVDA --as-of 2024-12-31
 ```
 
 The deprecated `filingedge` console script still invokes the same CLI and prints
@@ -242,9 +251,9 @@ uv run mypy src
 uv run pytest
 ```
 
-The offline suite currently contains **234** tests (SEC/financials plus market-data).
-All SEC and market-provider tests run against fixtures or mocks under
-`tests/fixtures/` — no live SEC or Twelve Data network access is required.
+The offline suite currently contains **268** tests. All SEC and market-provider tests
+run against fixtures or mocks under `tests/fixtures/` — no live SEC or Twelve
+Data network access is required.
 
 ## Market data (v0.3a)
 
@@ -273,15 +282,18 @@ uv run equitytrace market ingest SPY --asset-type etf --start 2020-01-01 --end 2
 uv run equitytrace market prices AAPL --start 2023-01-01 --end 2023-12-31 --adjustment none
 uv run equitytrace market cap AAPL --date 2023-09-29
 uv run equitytrace market cap-series AAPL --start 2022-01-01 --end 2023-12-31 --frequency month-end
+uv run equitytrace market analytics AAPL --as-of 2024-12-31 --benchmark SPY
+uv run equitytrace market rank-metric volatility_1y AAPL MSFT --as-of 2024-12-31
 ```
 
 SEC-only commands continue to work without a market-data API key.
 
-## Current limitations (v0.3.0 / v0.3a)
+## Current limitations (v0.3b / 0.3.1.dev0)
 
-- No valuation multiples, momentum, volatility, beta, or drawdowns (v0.3b)
+- P/E and P/S are FY only; quarterly TTM is not assembled
+- Provider-adjusted history is not a vendor-vintage PIT archive
+- Beta has no default ranking direction
 - No portfolios, rebalancing, or backtests (v0.3c)
-- FCF yield still needs an explicit `--market-cap` argument (native wiring is v0.3b)
 - No frontend / research UI
 - Canonical statements are computed on demand (not fully materialized)
 - Concept mappings cover common us-gaap tags; unusual issuer tags may be missing
@@ -308,7 +320,8 @@ SEC-only commands continue to work without a market-data API key.
 See [docs/roadmap.md](docs/roadmap.md).
 
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
-- **v0.3b** — Valuation, momentum, and risk (next)
+- **v0.3b** — Valuation, momentum, and risk (**this branch**, unreleased `0.3.1.dev0`)
+- **v0.3c** — Portfolio construction and backtesting
 - **v0.3c** — Portfolio construction and backtesting
 - **v1.0** — Strategy builder and research interface
 
