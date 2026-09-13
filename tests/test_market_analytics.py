@@ -6,6 +6,7 @@ import math
 import statistics
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 
 import pytest
 
@@ -168,6 +169,50 @@ def test_beta_known_ratio_default_spy_and_override(db: Database) -> None:
     assert vs_qqq.benchmark == "QQQ"
     expected_qqq = statistics.covariance(aaa_rets, qqq_rets) / statistics.variance(qqq_rets)
     assert vs_qqq.value == pytest.approx(expected_qqq)
+
+
+def test_beta_interior_gap_uses_matching_intervals(db: Database) -> None:
+    dates = _weekdays_ending_on(AS_OF.date(), REQUIRED_RETURNS + 2)
+    gap = dates[len(dates) // 2]
+    after_gap = dates[dates.index(gap) + 1]
+    spy_closes = {d: Decimal("100") for d in dates}
+    aaa_closes = {d: Decimal("100") for d in dates}
+    spy_closes[gap] = Decimal("150")
+    spy_closes[after_gap] = Decimal("200")
+    aaa_closes[after_gap] = Decimal("200")
+    aaa_dates = [d for d in dates if d != gap]
+    with db.session() as conn:
+        _seed_symbol(conn, "SPY", [(d, spy_closes[d]) for d in dates])
+        _seed_symbol(conn, "AAA", [(d, aaa_closes[d]) for d in aaa_dates])
+        result = MarketAnalyticsService(conn).calculate("AAA", "beta_1y", AS_OF)
+
+    common = [d for d in dates if d != gap]
+    common = common[-(REQUIRED_RETURNS + 1) :]
+    asset_prices = [float(aaa_closes[d]) for d in common]
+    bench_prices = [float(spy_closes[d]) for d in common]
+    asset_rets = [asset_prices[i] / asset_prices[i - 1] - 1.0 for i in range(1, len(asset_prices))]
+    bench_rets = [bench_prices[i] / bench_prices[i - 1] - 1.0 for i in range(1, len(bench_prices))]
+    expected = statistics.covariance(asset_rets, bench_rets) / statistics.variance(bench_rets)
+
+    # Old join-by-end-date would pair AAA's Mon→Wed move with SPY's Tue→Wed move.
+    old_asset: dict[date, float] = {}
+    ordered_aaa = aaa_dates
+    for prev, cur in pairwise(ordered_aaa):
+        old_asset[cur] = float(aaa_closes[cur] / aaa_closes[prev]) - 1.0
+    old_bench: dict[date, float] = {}
+    for prev, cur in pairwise(dates):
+        old_bench[cur] = float(spy_closes[cur] / spy_closes[prev]) - 1.0
+    old_common = sorted(set(old_asset) & set(old_bench))[-REQUIRED_RETURNS:]
+    old_a = [old_asset[d] for d in old_common]
+    old_b = [old_bench[d] for d in old_common]
+    old_beta = statistics.covariance(old_a, old_b) / statistics.variance(old_b)
+
+    assert result.valid
+    assert result.value == pytest.approx(expected)
+    assert result.value != pytest.approx(old_beta)
+    assert result.window_start == common[0]
+    assert result.window_end == common[-1]
+    assert ADJUSTED_HISTORY_WARNING in result.warnings
 
 
 def test_beta_inner_join_no_forward_fill(db: Database) -> None:

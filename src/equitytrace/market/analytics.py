@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import statistics
 from datetime import UTC, date, datetime, timedelta
-from itertools import pairwise
 from typing import Literal
 
 import duckdb
@@ -266,21 +265,11 @@ class MarketAnalyticsService:
                 bars=asset_bars,
                 benchmark=benchmark,
             )
-        if any(bar.close <= 0 for bar in asset_bars) or any(bar.close <= 0 for bar in bench_bars):
-            return _unavailable(
-                ticker,
-                "beta_1y",
-                as_of,
-                provider,
-                "non_positive_close",
-                bars=asset_bars,
-                benchmark=benchmark,
-            )
-        asset_returns = _returns_by_end_date(asset_bars)
-        bench_returns = _returns_by_end_date(bench_bars)
-        # Align on actual return dates. Forward-filling would invent observations.
-        common = sorted(set(asset_returns) & set(bench_returns))
-        if len(common) < REQUIRED_RETURNS:
+        asset_by_date = {bar.trading_date: bar for bar in asset_bars}
+        bench_by_date = {bar.trading_date: bar for bar in bench_bars}
+        # Intersect price dates first so both returns cover the same interval.
+        common_dates = sorted(set(asset_by_date) & set(bench_by_date))
+        if len(common_dates) < REQUIRED_RETURNS + 1:
             return _unavailable(
                 ticker,
                 "beta_1y",
@@ -290,9 +279,25 @@ class MarketAnalyticsService:
                 bars=asset_bars,
                 benchmark=benchmark,
             )
-        aligned = common[-REQUIRED_RETURNS:]
-        asset_vals = [asset_returns[d] for d in aligned]
-        bench_vals = [bench_returns[d] for d in aligned]
+        common_dates = common_dates[-(REQUIRED_RETURNS + 1) :]
+        asset_prices = [float(asset_by_date[d].close) for d in common_dates]
+        bench_prices = [float(bench_by_date[d].close) for d in common_dates]
+        if any(price <= 0 for price in (*asset_prices, *bench_prices)):
+            return _unavailable(
+                ticker,
+                "beta_1y",
+                as_of,
+                provider,
+                "non_positive_close",
+                bars=asset_bars,
+                benchmark=benchmark,
+            )
+        asset_vals = [
+            asset_prices[i] / asset_prices[i - 1] - 1.0 for i in range(1, len(asset_prices))
+        ]
+        bench_vals = [
+            bench_prices[i] / bench_prices[i - 1] - 1.0 for i in range(1, len(bench_prices))
+        ]
         variance = statistics.variance(bench_vals)
         if variance == 0:
             return _unavailable(
@@ -305,17 +310,17 @@ class MarketAnalyticsService:
                 benchmark=benchmark,
             )
         value = statistics.covariance(asset_vals, bench_vals) / variance
-        used = [bar for bar in asset_bars if bar.trading_date in aligned]
+        used = [asset_by_date[d] for d in common_dates]
         return _valid_result(
             ticker,
             "beta_1y",
             as_of,
             provider,
             value,
-            window_start=aligned[0],
-            window_end=aligned[-1],
+            window_start=common_dates[0],
+            window_end=common_dates[-1],
             observation_count=REQUIRED_RETURNS,
-            bars=used or asset_bars,
+            bars=used,
             benchmark=benchmark,
             ranking_direction=None,
         )
@@ -409,16 +414,6 @@ class MarketAnalyticsService:
                 bars=bars,
             )
         return bars
-
-
-def _returns_by_end_date(bars: list[DailyPriceBar]) -> dict[date, float]:
-    returns: dict[date, float] = {}
-    for previous, current in pairwise(bars):
-        prior = float(previous.close)
-        if prior <= 0:
-            continue
-        returns[current.trading_date] = float(current.close) / prior - 1.0
-    return returns
 
 
 def _as_of(as_of: datetime) -> datetime:

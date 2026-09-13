@@ -192,14 +192,17 @@ def _attach_market_input(
     extra = list(result.warnings)
     extra.extend(market_input.warnings)
     updates: dict[str, object] = {"market_input": market_input}
-    if _currency_mismatch(market_input):
+    # Native market-cap detail only when the factor actually lacked a usable cap.
+    # Do not hide annual_period_required or other fundamental unavailable reasons.
+    needed_cap = "market_cap_missing" in result.warnings
+    if _currency_mismatch(market_input) and needed_cap:
         updates["valid"] = False
         updates["value"] = None
         updates["unavailable_reason"] = (
             "Market-cap currency incompatible with canonical USD financials"
         )
         extra.append("currency_mismatch")
-    elif resolved_cap is None and not result.valid and market_input.unavailable_reason:
+    elif resolved_cap is None and needed_cap and market_input.unavailable_reason:
         updates["unavailable_reason"] = (
             f"Market capitalization unavailable ({market_input.unavailable_reason})"
         )

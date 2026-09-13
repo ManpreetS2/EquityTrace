@@ -364,6 +364,48 @@ def test_pe_currency_mismatch_unavailable(db: Database) -> None:
     assert result.market_input.currency == "EUR"
 
 
+def test_quarterly_pe_without_market_cap_keeps_annual_period_reason(db: Database) -> None:
+    _seed_alpha(db)
+    with db.session() as conn:
+        result = FactorEngine(conn).calculate(
+            "ALPHA", "price_to_earnings", "Q1-2023", as_of=AS_OF, persist=False
+        )
+    assert result.valid is False
+    assert result.value is None
+    assert "annual_period_required" in result.warnings
+    assert "annual" in (result.unavailable_reason or "").lower()
+    assert "FY" in (result.unavailable_reason or "")
+    assert "instrument_not_found" not in (result.unavailable_reason or "")
+
+
+def test_quarterly_ps_without_market_cap_keeps_annual_period_reason(db: Database) -> None:
+    _seed_alpha(db)
+    with db.session() as conn:
+        result = FactorEngine(conn).calculate(
+            "ALPHA", "price_to_sales", "Q1-2023", as_of=AS_OF, persist=False
+        )
+    assert result.valid is False
+    assert result.value is None
+    assert "annual_period_required" in result.warnings
+    assert "annual" in (result.unavailable_reason or "").lower()
+    assert "FY" in (result.unavailable_reason or "")
+    assert "instrument_not_found" not in (result.unavailable_reason or "")
+
+
+def test_annual_valuation_reports_native_market_cap_failure(db: Database) -> None:
+    _seed_alpha(db)
+    with db.session() as conn:
+        result = FactorEngine(conn).calculate(
+            "ALPHA", "price_to_earnings", "FY2023", as_of=AS_OF, persist=False
+        )
+    assert result.valid is False
+    assert result.value is None
+    assert "market_cap_missing" in result.warnings
+    assert "instrument_not_found" in (result.unavailable_reason or "")
+    assert result.market_input is not None
+    assert result.market_input.unavailable_reason == "instrument_not_found"
+
+
 def test_ps_fy_and_quarterly(db: Database) -> None:
     _native_cap(db)
     with db.session() as conn:

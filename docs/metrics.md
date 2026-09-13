@@ -99,8 +99,10 @@ Shorter samples are unavailable rather than relabeled as one-year metrics.
 
 * Formula: `cov(asset_returns, benchmark_returns) / var(benchmark_returns)`
 * Default benchmark: `SPY` (must already be stored; not downloaded)
-* Process: simple returns by ending trading date; inner join; no forward-fill;
-  latest 252 aligned pairs
+* Process: intersect common price dates first, then simple returns on those
+  consecutive shared intervals; no forward-fill; latest 252 matched returns.
+  Beta aligns common price dates first so asset and benchmark returns cover
+  identical intervals.
 * Ranking: none by default (low/high beta is not universally better)
 * Unavailable: missing benchmark; fewer than 252 aligned pairs; zero benchmark
   variance; non-positive close
