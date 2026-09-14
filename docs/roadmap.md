@@ -40,6 +40,7 @@
 * P/E, price-to-sales, price-to-book
 * 12-1 momentum; 1y volatility, beta, and max drawdown
 * PIT-safe market metric ranking (beta has no default direction)
+* Adversarial correctness hardening for valuation and market-window metrics
 * CLI: `market analytics`, `market rank-metric`
 * Formulas: `docs/metrics.md`
 

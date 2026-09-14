@@ -396,6 +396,7 @@ uv run pytest \
   tests/test_database.py \
   tests/test_migration_v03b.py \
   tests/test_valuation_factors.py \
+  tests/test_v031_adversarial.py \
   tests/test_market_analytics.py \
   tests/test_market_provider.py \
   tests/test_market_core.py \

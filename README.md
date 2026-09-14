@@ -255,9 +255,8 @@ uv run mypy src
 uv run pytest
 ```
 
-The offline suite currently contains **272** tests. All SEC and market-provider tests
-run against fixtures or mocks under `tests/fixtures/` — no live SEC or Twelve
-Data network access is required.
+The offline test suite runs entirely against fixtures and mocks; no live SEC or
+Twelve Data access is required.
 
 ## Market data and analytics
 
