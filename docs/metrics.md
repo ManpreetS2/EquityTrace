@@ -1,6 +1,6 @@
 # Research metrics
 
-Formulas and point-in-time rules for EquityTrace v0.3b valuation factors and
+Formulas and point-in-time rules for EquityTrace v0.3.1 valuation factors and
 market-window analytics. Ambiguous inputs return `UNAVAILABLE` rather than a
 guess.
 
@@ -26,7 +26,8 @@ Canonical financials are USD. A non-USD market-cap currency is unavailable.
 
 ### FCF yield (`fcf_yield`)
 
-* Formula: `period free cash flow / market capitalization`
+* Formula: `FCF / PIT market cap`
+* Market cap: `raw close × PIT shares`
 * Inputs: snapshot `free_cash_flow`; PIT market cap
 * Price mode: raw
 * Ranking: higher is better
@@ -37,7 +38,7 @@ Canonical financials are USD. A non-USD market-cap currency is unavailable.
 
 ### Price to earnings (`price_to_earnings`)
 
-* Formula: `PIT market cap / selected-period net income`
+* Formula: `PIT market cap / annual net income`
 * Inputs: `net_income`; PIT market cap
 * Price mode: raw
 * Lookback: the requested FY period only (no annualization)
@@ -45,16 +46,16 @@ Canonical financials are USD. A non-USD market-cap currency is unavailable.
 * PIT: as above
 * Unavailable: quarterly period (`annual_period_required`); missing/non-positive
   net income; market cap unavailable; currency mismatch
-* Limitation: no TTM quarter assembly; negative P/E is not returned
+* Limitation: FY only; no TTM quarter assembly; negative P/E is not returned
 
 ### Price to sales (`price_to_sales`)
 
-* Formula: `PIT market cap / selected-period revenue`
+* Formula: `PIT market cap / annual revenue`
 * Inputs: `revenue`; PIT market cap
 * Price mode: raw
 * Ranking: lower is better
-* Unavailable: quarterly period; missing/non-positive revenue; market cap
-  unavailable; currency mismatch
+* Unavailable: quarterly period (`annual_period_required`); missing/non-positive
+  revenue; market cap unavailable; currency mismatch
 * Limitation: FY only; no TTM
 
 ### Price to book (`price_to_book`)
@@ -66,8 +67,8 @@ Canonical financials are USD. A non-USD market-cap currency is unavailable.
 * PIT: as above
 * Unavailable: missing/non-positive equity; market cap unavailable; currency
   mismatch
-* Limitation: book value may be annual or quarterly; still not a tangible-book
-  variant
+* Limitation: annual or selected quarterly balance-sheet snapshot; still not a
+  tangible-book variant
 
 ## Market metrics (stored daily bars)
 
@@ -81,9 +82,9 @@ Shorter samples are unavailable rather than relabeled as one-year metrics.
 
 ### 12-1 momentum (`momentum_12_1`)
 
-* Formula: `end_adjusted_close / start_adjusted_close - 1`
-* Start: most recent 253 closes, `bars[-253]`
-* End: `bars[-22]` (skips the latest 21 observations)
+* Formula: `bars[-22] / bars[-253] - 1`
+* Observations: latest 253 adjusted closes
+* End: `bars[-22]` (skips the latest 21 sessions)
 * Ranking: higher is better
 * Unavailable: fewer than 253 closes; start close `<= 0`; ambiguous duplicate
   history

@@ -34,7 +34,7 @@
 * SPY / ETF benchmark price support
 * CLI: `market ingest`, `market prices`, `market cap`, `market cap-series`
 
-### v0.3b — Valuation, momentum, and risk (this branch)
+### v0.3b / v0.3.1 — Valuation, momentum, and risk (completed)
 
 * Native FCF yield using stored PIT market cap
 * P/E, price-to-sales, price-to-book
@@ -43,9 +43,7 @@
 * CLI: `market analytics`, `market rank-metric`
 * Formulas: `docs/metrics.md`
 
-Not released. Package version is `0.3.1.dev0`.
-
-### v0.3c — Portfolio construction and backtesting
+### v0.3c — Portfolio construction and backtesting (next)
 
 * Portfolio construction
 * Rebalancing
