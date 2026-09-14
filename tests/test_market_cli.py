@@ -35,6 +35,8 @@ def test_market_help() -> None:
     assert result.exit_code == 0
     assert "ingest" in result.output
     assert "cap" in result.output
+    assert "analytics" in result.output
+    assert "rank-metric" in result.output
 
 
 def test_missing_api_key_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -135,4 +137,29 @@ def test_existing_sec_commands_still_work(tmp_path: Path, monkeypatch: pytest.Mo
     clear_settings_cache()
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.3.0" in result.output
+    assert "0.3.1.dev0" in result.output
+
+
+def test_market_analytics_unavailable_is_zero_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _prepare(tmp_path, monkeypatch)
+    result = runner.invoke(
+        app,
+        ["market", "analytics", "AAPL", "--as-of", "2024-12-31"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "momentum_12_1" in result.output
+    assert "beta_1y" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_rank_metric_refuses_beta(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _prepare(tmp_path, monkeypatch)
+    result = runner.invoke(
+        app,
+        ["market", "rank-metric", "beta_1y", "AAPL", "MSFT", "--as-of", "2024-12-31"],
+    )
+    assert result.exit_code != 0
+    assert "ranking direction" in result.output.lower()
+    assert "Traceback" not in result.output

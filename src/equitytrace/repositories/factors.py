@@ -64,8 +64,9 @@ class FactorRepository:
             INSERT INTO factor_values (
                 ticker, cik, factor_name, fiscal_year, fiscal_period, as_of,
                 value, valid, inputs_json, source_filings_json, warnings_json,
-                unavailable_reason, ranking_direction, run_id, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                market_input_json, unavailable_reason, ranking_direction, run_id,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (ticker, factor_name, fiscal_year, fiscal_period, as_of)
             DO UPDATE SET
                 cik = excluded.cik,
@@ -74,6 +75,7 @@ class FactorRepository:
                 inputs_json = excluded.inputs_json,
                 source_filings_json = excluded.source_filings_json,
                 warnings_json = excluded.warnings_json,
+                market_input_json = excluded.market_input_json,
                 unavailable_reason = excluded.unavailable_reason,
                 ranking_direction = excluded.ranking_direction,
                 run_id = excluded.run_id,
@@ -91,6 +93,11 @@ class FactorRepository:
                 json.dumps(result.inputs),
                 json.dumps(list(result.source_filings)),
                 json.dumps(list(result.warnings)),
+                (
+                    result.market_input.model_dump_json()
+                    if result.market_input is not None
+                    else None
+                ),
                 result.unavailable_reason,
                 result.ranking_direction,
                 run_id,

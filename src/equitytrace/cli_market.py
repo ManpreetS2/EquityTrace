@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
@@ -15,6 +15,11 @@ from rich.table import Table
 
 from equitytrace.config import ConfigurationError, clear_settings_cache, get_settings
 from equitytrace.database import initialize_database
+from equitytrace.market.analytics import (
+    BetaHasNoRankingDirection,
+    MarketAnalyticsService,
+    UnknownMarketMetricError,
+)
 from equitytrace.market.market_cap import MarketCapFrequency, MarketCapService
 from equitytrace.market.models import AssetType, PriceAdjustmentMode
 from equitytrace.market.providers.errors import MarketDataError
@@ -26,7 +31,7 @@ err_console = Console(stderr=True)
 
 market_app = typer.Typer(
     name="market",
-    help="Market-data ingestion, prices, and historical market capitalization.",
+    help="Market-data ingestion, prices, market cap, and window analytics.",
     no_args_is_help=True,
 )
 
@@ -265,8 +270,6 @@ def market_cap_cmd(
     ] = None,
 ) -> None:
     """Compute historically safe market capitalization for one date."""
-    from datetime import UTC, datetime
-
     clear_settings_cache()
     settings = get_settings()
     try:
@@ -387,6 +390,149 @@ def market_cap_series_cmd(
             "ok" if r.is_available else (r.unavailable_reason or "unavailable"),
         )
     console.print(table)
+
+
+@market_app.command("analytics")
+def market_analytics_cmd(
+    symbol: Annotated[str, typer.Argument(help="Canonical symbol, e.g. AAPL")],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+    ],
+    benchmark: Annotated[
+        str,
+        typer.Option("--benchmark", help="Stored benchmark symbol for beta"),
+    ] = "SPY",
+    database: Annotated[
+        Path | None,
+        typer.Option("--database", help="DuckDB database path override."),
+    ] = None,
+) -> None:
+    """Show stored-price momentum, volatility, beta, and max drawdown."""
+    clear_settings_cache()
+    settings = get_settings()
+    try:
+        as_of = _parse_as_of(as_of_date)
+    except ValueError as exc:
+        _user_error(str(exc))
+
+    path = database or settings.database_path
+    if not path.exists():
+        _user_error(f"Database not found at {path}. Run `equitytrace init-db` first.")
+    db = initialize_database(path)
+    with db.session(read_only=True) as conn:
+        results = MarketAnalyticsService(conn).calculate_all(
+            symbol,
+            as_of,
+            benchmark=benchmark,
+        )
+
+    table = Table(title=f"Market analytics · {symbol.upper()}")
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_column("Window")
+    table.add_column("Notes")
+    for result in results:
+        window = "—"
+        if result.window_start and result.window_end:
+            window = f"{result.window_start} → {result.window_end}"
+        notes = result.unavailable_reason or "; ".join(result.warnings) or "—"
+        table.add_row(
+            result.metric,
+            f"{result.value:.6g}" if result.value is not None else "—",
+            window,
+            notes,
+        )
+    console.print(table)
+    if results and results[0].warnings:
+        console.print("[dim]" + "; ".join(results[0].warnings) + "[/dim]")
+
+
+@market_app.command("rank-metric")
+def market_rank_metric_cmd(
+    metric: Annotated[str, typer.Argument(help="Market metric name, e.g. momentum_12_1")],
+    tickers: Annotated[list[str], typer.Argument(help="Tickers to rank")],
+    as_of_date: Annotated[
+        str,
+        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+    ],
+    benchmark: Annotated[
+        str,
+        typer.Option("--benchmark", help="Stored benchmark symbol for beta"),
+    ] = "SPY",
+    database: Annotated[
+        Path | None,
+        typer.Option("--database", help="DuckDB database path override."),
+    ] = None,
+) -> None:
+    """Rank tickers by a market-window metric. Beta ranking is refused."""
+    clear_settings_cache()
+    settings = get_settings()
+    symbols = [
+        part.strip().upper() for ticker in tickers for part in ticker.split(",") if part.strip()
+    ]
+    if not symbols:
+        _user_error("Provide at least one ticker.")
+    try:
+        as_of = _parse_as_of(as_of_date)
+    except ValueError as exc:
+        _user_error(str(exc))
+
+    path = database or settings.database_path
+    if not path.exists():
+        _user_error(f"Database not found at {path}. Run `equitytrace init-db` first.")
+    db = initialize_database(path)
+    try:
+        with db.session(read_only=True) as conn:
+            ranking = MarketAnalyticsService(conn).rank(
+                symbols,
+                metric,
+                as_of,
+                benchmark=benchmark,
+            )
+    except (UnknownMarketMetricError, BetaHasNoRankingDirection) as exc:
+        _user_error(str(exc))
+
+    console.print(
+        Panel.fit(
+            f"Metric [bold]{ranking.metric}[/bold]\n"
+            f"As of {ranking.as_of.astimezone(UTC).isoformat()}\n"
+            f"Direction: {ranking.ranking_direction} · valid={ranking.valid_count}",
+            title="rank-metric",
+        )
+    )
+    table = Table()
+    table.add_column("Rank", justify="right")
+    table.add_column("Ticker")
+    table.add_column("Value", justify="right")
+    table.add_column("Percentile", justify="right")
+    for row in ranking.rows:
+        assert row.rank is not None
+        table.add_row(
+            str(row.rank),
+            row.result.ticker,
+            f"{row.result.value:.6g}" if row.result.value is not None else "—",
+            f"{row.percentile:.1f}" if row.percentile is not None else "—",
+        )
+    console.print(table)
+    if ranking.excluded:
+        excluded = Table(title="Excluded")
+        excluded.add_column("Ticker")
+        excluded.add_column("Reason")
+        for symbol, reason in ranking.excluded:
+            excluded.add_row(symbol, reason)
+        console.print(excluded)
+
+
+def _parse_as_of(value: str) -> datetime:
+    text = value.strip()
+    if "T" in text or " " in text:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    day = date.fromisoformat(text)
+    return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=UTC)
 
 
 def _cap_to_dict(result: Any) -> dict[str, Any]:

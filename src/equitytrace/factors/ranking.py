@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from equitytrace.factors.models import FactorResult, RankedFactorResult, RankingResult
 from equitytrace.factors.registry import get_factor, normalize_factor_name
@@ -25,11 +26,14 @@ def rank_factors(
 
     Invalid / unavailable results are excluded from ranks and percentiles.
     Tied values receive the same competition rank and the same percentile.
+
+    Valuation factors that need stored market cap should be ranked through
+    ``FactorEngine.rank`` so native market-cap resolution is shared with
+    ``FactorEngine.calculate``.
     """
     factor_name = normalize_factor_name(factor)
     factor_obj = get_factor(factor_name)
     parsed = period if isinstance(period, FinancialPeriod) else parse_period(period)
-    direction = factor_obj.ranking_direction
     market_caps = market_cap_by_ticker or {}
 
     results: list[FactorResult] = []
@@ -55,37 +59,41 @@ def rank_factors(
             continue
         results.append(result)
 
-    reverse = direction == "higher_is_better"
-    # Deterministic secondary key on ticker for stable ordering within ties.
-    results.sort(
-        key=lambda r: (r.value is not None, r.value, r.ticker),
-        reverse=reverse,
+    return rank_factor_results(
+        results=results,
+        excluded=excluded,
+        factor=factor_name,
+        period=parsed,
+        as_of=as_of,
+        ranking_direction=factor_obj.ranking_direction,
     )
-    # When reverse=True, ticker sort is also reversed; restore A→Z within ties.
-    if reverse:
-        grouped: list[FactorResult] = []
-        i = 0
-        while i < len(results):
-            j = i + 1
-            while j < len(results) and results[j].value == results[i].value:
-                j += 1
-            tied = sorted(results[i:j], key=lambda r: r.ticker)
-            grouped.extend(tied)
-            i = j
-        results = grouped
 
-    n = len(results)
+
+def rank_factor_results(
+    *,
+    results: list[FactorResult],
+    excluded: list[tuple[str, str]],
+    factor: str,
+    period: FinancialPeriod,
+    as_of: datetime,
+    ranking_direction: Literal["higher_is_better", "lower_is_better"],
+) -> RankingResult:
+    """Apply competition ranks to already-calculated valid factor results."""
+    ordered = _order_for_ranking(
+        results,
+        higher_is_better=ranking_direction == "higher_is_better",
+    )
+    n = len(ordered)
     ranked: list[RankedFactorResult] = []
     idx = 0
     while idx < n:
-        value = results[idx].value
+        value = ordered[idx].value
         end = idx + 1
-        while end < n and results[end].value == value:
+        while end < n and ordered[end].value == value:
             end += 1
-        # Competition ranking: first occurrence index + 1.
         rank = idx + 1
         percentile = 100.0 if n == 1 else 100.0 * (n - rank) / (n - 1)
-        for result in results[idx:end]:
+        for result in ordered[idx:end]:
             ranked.append(
                 RankedFactorResult(
                     result=result,
@@ -96,11 +104,38 @@ def rank_factors(
         idx = end
 
     return RankingResult(
-        factor=factor_name,
-        period=parsed,
+        factor=factor,
+        period=period,
         as_of=as_of,
-        ranking_direction=direction,
+        ranking_direction=ranking_direction,
         rows=tuple(ranked),
         valid_count=n,
         excluded=tuple(excluded),
     )
+
+
+def _order_for_ranking(
+    results: list[FactorResult],
+    *,
+    higher_is_better: bool,
+) -> list[FactorResult]:
+    reverse = higher_is_better
+    ordered = list(results)
+    # Deterministic secondary key on ticker for stable ordering within ties.
+    ordered.sort(
+        key=lambda r: (r.value is not None, r.value, r.ticker),
+        reverse=reverse,
+    )
+    # When reverse=True, ticker sort is also reversed; restore A→Z within ties.
+    if reverse:
+        grouped: list[FactorResult] = []
+        i = 0
+        while i < len(ordered):
+            j = i + 1
+            while j < len(ordered) and ordered[j].value == ordered[i].value:
+                j += 1
+            tied = sorted(ordered[i:j], key=lambda r: r.ticker)
+            grouped.extend(tied)
+            i = j
+        ordered = grouped
+    return ordered

@@ -11,10 +11,10 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `0.3.0` |
-| Release | v0.3.0 |
+| Package | `equitytrace` `0.3.1.dev0` |
+| Release | last tagged: v0.3.0 |
 | v0.3a | complete |
-| Next milestone | v0.3b — valuation, momentum, and risk |
+| v0.3b | this branch — valuation, momentum, and risk |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
@@ -32,6 +32,7 @@ EquityTrace is a Python-first quantitative **research** platform:
 * traceable normalized facts
 * transparent fundamental factors
 * market data (v0.3a)
+* valuation factors + market-window analytics (v0.3b)
 * reproducible rankings
 
 It is **not** an AI stock picker, personalized advice engine, black-box scorer,
@@ -46,15 +47,15 @@ explanation. Do not fabricate a confident result.
 EquityTrace/
 ├── src/equitytrace/          # library + CLI
 │   ├── cli.py                # SEC / statements / factors CLI
-│   ├── cli_market.py         # market ingest / prices / cap CLI
+│   ├── cli_market.py         # market ingest / prices / cap / analytics CLI
 │   ├── config.py             # EQUITYTRACE_* settings (+ FILINGEDGE_* fallback)
-│   ├── database.py           # schema, init, v0.2 / v0.3a additive repairs
+│   ├── database.py           # schema, init, v0.2 / v0.3a / v0.3b additive repairs
 │   ├── models.py             # Issuer / Security / Filing / FinancialFact
 │   ├── sec/                  # HTTP client + ticker / submissions / facts / PIT
 │   ├── repositories/         # DuckDB persistence
 │   ├── financials/           # canonical statements (on demand)
-│   ├── factors/              # factor implementations + ranking
-│   └── market/               # v0.3a prices, shares, market cap
+│   ├── factors/              # fiscal-period factors + ranking
+│   └── market/               # prices, shares, market cap, window analytics
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
@@ -86,6 +87,8 @@ market symbol
   -> validate / date-range / timezone / available_at
   -> repositories.market persist bars + run audit
   -> market.shares + market.market_cap (raw close × PIT shares)
+  -> factors.engine (valuation: native market cap)
+  -> market.analytics (adjusted closes; 12-1 / vol / beta / drawdown)
 ```
 
 ### SEC ingestion
@@ -117,12 +120,14 @@ Snapshots are computed on demand. They are not a materialized table.
 ### Factors and rankings
 
 * registry: `src/equitytrace/factors/registry.py` (`_FACTORS`, aliases)
-* implementations: sibling modules (`revenue_growth.py`, `free_cash_flow.py`, …)
+* implementations: sibling modules (`revenue_growth.py`, `valuation.py`, …)
 * engine / persist: `factors/engine.py` → `repositories/factors.py`
-* ranking: `factors/ranking.py` (`rank_factors`; competition rank, ticker tie-break)
+  (engine owns `MarketCapService` for valuation factors)
+* ranking: `factors/ranking.py` (`rank_factors` / `rank_factor_results`;
+  `FactorEngine.rank` uses the same `calculate` path)
 
-v0.3a `fcf_yield` still requires an explicit `market_cap` argument. Native
-wiring to stored market cap is **v0.3b**.
+Valuation factors: `fcf_yield`, `price_to_earnings`, `price_to_sales`,
+`price_to_book`. See `docs/metrics.md`.
 
 ### Market data
 
@@ -132,7 +137,11 @@ Twelve Data is isolated in `src/equitytrace/market/providers/twelve_data.py`.
 The provider protocol is `market/providers/base.py`. Do not import Twelve Data
 from financials or factors.
 
-CLI: `src/equitytrace/cli_market.py` (`market ingest|prices|cap|cap-series`).
+Window analytics: `src/equitytrace/market/analytics.py` (stored bars only,
+`PriceAdjustmentMode.ALL`, bounded lookback).
+
+CLI: `src/equitytrace/cli_market.py`
+(`market ingest|prices|cap|cap-series|analytics|rank-metric`).
 
 ### Shares and market cap
 
@@ -147,9 +156,9 @@ CLI: `src/equitytrace/cli_market.py` (`market ingest|prices|cap|cap-series`).
 | Path | Responsibility |
 | --- | --- |
 | `src/equitytrace/cli.py` | SEC/statements/factors/rank CLI; `filingedge` deprecation wrapper |
-| `src/equitytrace/cli_market.py` | Market CLI; non-zero exit on failed ingest |
+| `src/equitytrace/cli_market.py` | Market CLI; analytics/rank-metric; non-zero on failed ingest |
 | `src/equitytrace/config.py` | pydantic-settings; `EQUITYTRACE_*` / legacy `FILINGEDGE_*` |
-| `src/equitytrace/database.py` | DuckDB schema + additive v0.2 / v0.3a repairs |
+| `src/equitytrace/database.py` | DuckDB schema + additive v0.2 / v0.3a / v0.3b repairs |
 | `src/equitytrace/models.py` | Core SEC domain models + `fact_id` |
 | `src/equitytrace/sec/client.py` | HTTPX, rate limit, atomic cache, archive filename safety |
 | `src/equitytrace/sec/tickers.py` | Ticker → CIK |
@@ -166,12 +175,15 @@ CLI: `src/equitytrace/cli_market.py` (`market ingest|prices|cap|cap-series`).
 | `src/equitytrace/financials/` | Canonical statements |
 | `src/equitytrace/factors/registry.py` | Factor name → implementation |
 | `src/equitytrace/factors/ranking.py` | Deterministic cross-sectional rank |
-| `src/equitytrace/factors/engine.py` | Calculate + optional persist |
+| `src/equitytrace/factors/engine.py` | Calculate + native market cap + optional persist |
+| `src/equitytrace/factors/valuation.py` | P/E, P/S, P/B |
 | `src/equitytrace/market/service.py` | Ingest orchestration, bar validation, run finalize |
 | `src/equitytrace/market/providers/twelve_data.py` | Only Twelve Data adapter |
 | `src/equitytrace/market/shares.py` | PIT shares outstanding |
 | `src/equitytrace/market/market_cap.py` | Historically safe market cap |
+| `src/equitytrace/market/analytics.py` | 12-1 momentum, 1y vol/beta/drawdown from stored bars |
 | `src/equitytrace/market/availability.py` | Bar availability convention |
+| `docs/metrics.md` | Valuation and market-metric formulas |
 | `.github/workflows/ci.yml` | ruff / format / mypy / pytest |
 
 ## Persistence map
@@ -185,9 +197,10 @@ Additive repairs (existing DBs):
 * `_ensure_market_symbol_mapping_schema` (surrogate `mapping_id`)
 * `_ensure_market_child_tables_without_fk` (DuckDB parent-UPDATE limitation)
 * `_ensure_market_instrument_metadata_confirmed`
+* `_ensure_factor_values_market_input`
 
 Migration labels in `schema_migrations`: `0.2.0`, `0.3.0-a`, legacy `0.3.0a`,
-`0.3.0-a1`, `0.3.0-a2`.
+`0.3.0-a1`, `0.3.0-a2`, `0.3.0-b`.
 
 | Table | Written by | Notes |
 | --- | --- | --- |
@@ -197,7 +210,7 @@ Migration labels in `schema_migrations`: `0.2.0`, `0.3.0-a`, legacy `0.3.0a`,
 | `financial_facts` | `repositories/facts.py` | deterministic `fact_id`; per-CIK DELETE+INSERT on ingest |
 | `ingestion_runs` | `repositories/ingestion.py` | ingest audit |
 | `schema_migrations` | `database.py` | logical versions |
-| `factor_runs` / `factor_values` | `repositories/factors.py` | optional materialization |
+| `factor_runs` / `factor_values` | `repositories/factors.py` | optional materialization; nullable `market_input_json` |
 | `market_instruments` | `repositories/market.py` | `canonical_symbol` UNIQUE in v0.3a |
 | `market_symbol_mappings` | `repositories/market.py` | `valid_from` / `valid_to`; inverted intervals rejected |
 | `daily_price_bars` | `repositories/market.py` | unique `(instrument_id, provider, trading_date, adjustment_mode)` |
@@ -235,8 +248,8 @@ These must never be violated:
 11. `market_data_run` finalization failures must be surfaced (no blanket
     `contextlib.suppress(Exception)`).
 12. Ambiguous financial semantics → `UNAVAILABLE` + reason, never a guess.
-13. Do not introduce look-ahead, future filing/market leakage, hidden
-    survivorship, fabricated fundamentals, or silent restatement swaps.
+14. Market-window metrics use adjusted closes and must not claim vintage PIT.
+15. Do not scan unbounded price history for a 1y metric (~550 calendar days).
 
 ## Test ownership
 
@@ -252,11 +265,14 @@ These must never be violated:
 | CLI (SEC / v0.2) | `tests/test_cli.py`, `tests/test_cli_v02.py` |
 | Statements | `tests/test_financials.py` |
 | Factors / ranking | `tests/test_factors.py` |
+| Valuation factors | `tests/test_valuation_factors.py` |
 | v0.2 audit | `tests/test_audit_v02.py` |
+| v0.3b factor_values column | `tests/test_migration_v03b.py` |
 | Market provider | `tests/test_market_provider.py` |
 | Market core ingest | `tests/test_market_core.py` |
 | Market CLI | `tests/test_market_cli.py` |
 | Market audit / PIT / shares | `tests/test_market_audit.py` |
+| Market analytics / PIT / ranking | `tests/test_market_analytics.py` |
 | Market hardening | `tests/test_market_harden.py` |
 | Market final edge cases | `tests/test_market_final.py` |
 | v0.3a release-readiness regressions | `tests/test_release_audit.py` |
@@ -266,20 +282,27 @@ All of these tests are offline. CI must not call live SEC or Twelve Data.
 
 ## Current release-risk hotspots
 
+v0.3b correctness concentrates here:
+
+* `factors/engine.py` — native market-cap resolution vs manual override
+* `factors/valuation.py` + `factors/free_cash_flow.py` — FY-only P/E/P/S, raw cap
+* `market/analytics.py` — 253-bar windows, PIT `available_at`, no forward-fill
+* `market/market_cap.py` — raw close, multi-class, staleness
+* `database.py` — additive `market_input_json`
+* `cli_market.py` — analytics / rank-metric; beta ranking refused
+
 v0.3a correctness still concentrates here:
 
 * `sec/normalization.py` — acceptance / `available_at`
 * `sec/client.py` — cache replace + archive names
 * `market/service.py` — date-range reject, metadata-after-validate, run finalize
 * `market/providers/twelve_data.py` — window merge / conflicts
-* `market/market_cap.py` + `repositories/market.py` — multi-class + mapping intervals
 * `cli_market.py` — failed ingest exit code
-* docs vs actual tables / env / FCF-yield / adjusted-history limitations
 
 ## Roadmap touchpoints
 
-See `docs/roadmap.md`. v0.3a is complete in v0.3.0. Do not begin v0.3b in a
-release-maintenance change.
+See `docs/roadmap.md`. v0.3a is complete in v0.3.0. This map describes v0.3b
+on `feature/v0.3b-valuation-momentum-risk`. Do not start v0.3c here.
 
 ### v0.3a
 
@@ -289,12 +312,13 @@ market CLI.
 
 ### v0.3b
 
-**Does not exist yet.** Planned in existing factor / market modules (no new
-top-level package required):
+Implemented in existing `factors/` and `market/` packages (no new top-level
+package):
 
-* native FCF yield from stored market cap (`factors/free_cash_flow.py`)
+* native FCF yield from stored market cap
 * P/E, P/S, P/B
 * momentum, volatility, beta, drawdown
+* `docs/metrics.md`
 
 ### v0.3c
 
@@ -327,12 +351,14 @@ are out of scope for EquityTrace itself.
 | Fact/filing persistence | `repositories/facts.py`, `repositories/filings.py` |
 | Statement mapping miss | `financials/mappings.py` + `financials/selector.py` |
 | Factor formula / registry | `factors/<name>.py` + `factors/registry.py` |
-| Ranking nondeterminism | `factors/ranking.py` |
+| Ranking nondeterminism | `factors/ranking.py` / `market/analytics.py` |
+| Valuation / native cap | `factors/engine.py`, `factors/valuation.py` |
 | Market ingest | `market/service.py` |
 | Twelve Data payload | `market/providers/twelve_data.py` only |
 | Shares outstanding | `market/shares.py` |
 | Market cap / multi-class | `market/market_cap.py` |
-| Schema / migration | `database.py` + `tests/test_database.py` / `tests/test_migration_v02.py` |
+| Momentum / vol / beta / DD | `market/analytics.py` |
+| Schema / migration | `database.py` + `tests/test_migration_v02.py` / `tests/test_migration_v03b.py` |
 | CLI exit codes | `cli.py` / `cli_market.py` |
 | Env vars | `config.py` + `.env.example` |
 
@@ -343,7 +369,7 @@ are out of scope for EquityTrace itself.
 3. Read the owning test file before changing behavior.
 4. Search more broadly only if the bounded files do not contain the answer.
 5. Do not scan `tests/fixtures/` or the whole `src/` tree by default.
-6. Do not create v0.3b/v0.3c packages or features from this map.
+6. Do not create v0.3c packages or features from this map.
 
 ## Verification commands
 
@@ -363,7 +389,9 @@ uv run pytest \
   tests/test_normalization.py \
   tests/test_point_in_time.py \
   tests/test_database.py \
-  tests/test_migration_v02.py \
+  tests/test_migration_v03b.py \
+  tests/test_valuation_factors.py \
+  tests/test_market_analytics.py \
   tests/test_market_provider.py \
   tests/test_market_core.py \
   tests/test_market_cli.py \

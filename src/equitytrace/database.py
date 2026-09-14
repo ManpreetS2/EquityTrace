@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS factor_values (
     inputs_json VARCHAR,
     source_filings_json VARCHAR,
     warnings_json VARCHAR,
+    market_input_json VARCHAR,
     unavailable_reason VARCHAR,
     ranking_direction VARCHAR NOT NULL,
     run_id VARCHAR,
@@ -275,6 +276,7 @@ class Database:
             _ensure_market_symbol_mapping_schema(conn)
             _ensure_market_child_tables_without_fk(conn)
             _ensure_market_instrument_metadata_confirmed(conn)
+            _ensure_factor_values_market_input(conn)
             conn.execute(
                 """
                 INSERT INTO schema_migrations (version, notes)
@@ -328,7 +330,29 @@ class Database:
                     "Confirm instrument market metadata separately from creation defaults",
                 ],
             )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "0.3.0-b",
+                    "Nullable market_input_json on factor_values for valuation provenance",
+                ],
+            )
         logger.info("Initialized DuckDB schema at %s", self.path)
+
+
+def _ensure_factor_values_market_input(conn: duckdb.DuckDBPyConnection) -> None:
+    """Add market_input_json when upgrading pre-v0.3b factor_values tables."""
+    tables = {str(r[0]) for r in conn.execute("SHOW TABLES").fetchall()}
+    if "factor_values" not in tables:
+        return
+    cols = _table_columns(conn, "factor_values")
+    if "market_input_json" in cols:
+        return
+    conn.execute("ALTER TABLE factor_values ADD COLUMN market_input_json VARCHAR")
 
 
 def _ensure_market_instrument_metadata_confirmed(conn: duckdb.DuckDBPyConnection) -> None:

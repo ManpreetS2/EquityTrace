@@ -12,12 +12,20 @@ from equitytrace.factors.operating_margin import OperatingMarginChangeFactor
 from equitytrace.factors.quality_score import BasicQualityScoreFactor
 from equitytrace.factors.revenue_growth import RevenueGrowthFactor
 from equitytrace.factors.roa import ReturnOnAssetsFactor
+from equitytrace.factors.valuation import (
+    PriceToBookFactor,
+    PriceToEarningsFactor,
+    PriceToSalesFactor,
+)
 
 _FACTORS: dict[str, Factor] = {
     "revenue_growth": cast(Factor, RevenueGrowthFactor()),
     "operating_margin_change": cast(Factor, OperatingMarginChangeFactor()),
     "free_cash_flow": cast(Factor, FreeCashFlowFactor()),
     "fcf_yield": cast(Factor, FreeCashFlowYieldFactor()),
+    "price_to_earnings": cast(Factor, PriceToEarningsFactor()),
+    "price_to_sales": cast(Factor, PriceToSalesFactor()),
+    "price_to_book": cast(Factor, PriceToBookFactor()),
     "debt_change": cast(Factor, DebtChangeFactor()),
     "roa": cast(Factor, ReturnOnAssetsFactor()),
     "accrual_ratio": cast(Factor, AccrualRatioFactor()),
@@ -36,6 +44,21 @@ _ALIASES = {
     "fcf": "free_cash_flow",
     "fcf-yield": "fcf_yield",
     "fcf_yield": "fcf_yield",
+    "pe": "price_to_earnings",
+    "p-e": "price_to_earnings",
+    "p_e": "price_to_earnings",
+    "price-to-earnings": "price_to_earnings",
+    "price_to_earnings": "price_to_earnings",
+    "ps": "price_to_sales",
+    "p-s": "price_to_sales",
+    "p_s": "price_to_sales",
+    "price-to-sales": "price_to_sales",
+    "price_to_sales": "price_to_sales",
+    "pb": "price_to_book",
+    "p-b": "price_to_book",
+    "p_b": "price_to_book",
+    "price-to-book": "price_to_book",
+    "price_to_book": "price_to_book",
     "debt-change": "debt_change",
     "debt_change": "debt_change",
     "roa": "roa",
