@@ -130,10 +130,12 @@ class MarketAnalyticsService:
         as_of_utc = _as_of(as_of)
         results: list[MarketAnalyticsResult] = []
         excluded: list[tuple[str, str]] = []
+        seen: set[str] = set()
         for ticker in tickers:
             symbol = ticker.strip().upper()
-            if not symbol:
+            if not symbol or symbol in seen:
                 continue
+            seen.add(symbol)
             result = self.calculate(
                 symbol,
                 name,
@@ -183,7 +185,9 @@ class MarketAnalyticsService:
         window = loaded[-REQUIRED_CLOSES:]
         start = window[0]
         end = window[-MOMENTUM_SKIP_RECENT - 1]
-        if start.close <= 0:
+        start_px = float(start.close)
+        end_px = float(end.close)
+        if not math.isfinite(start_px) or start_px <= 0:
             return _unavailable(
                 ticker,
                 "momentum_12_1",
@@ -192,7 +196,16 @@ class MarketAnalyticsService:
                 "start_close_non_positive",
                 bars=window,
             )
-        value = float(end.close / start.close) - 1.0
+        if not math.isfinite(end_px) or end_px <= 0:
+            return _unavailable(
+                ticker,
+                "momentum_12_1",
+                as_of,
+                provider,
+                "end_close_non_positive",
+                bars=window,
+            )
+        value = end_px / start_px - 1.0
         return _valid_result(
             ticker,
             "momentum_12_1",

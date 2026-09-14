@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from equitytrace.factors.base import invalid_result, snapshot_accessions
+from equitytrace.factors.base import invalid_result, snapshot_accessions, unusable_market_cap
 from equitytrace.factors.models import FactorResult
 from equitytrace.financials.models import FinancialPeriod
 from equitytrace.financials.service import FinancialsService
@@ -98,6 +98,18 @@ class FreeCashFlowYieldFactor:
             snap, "free_cash_flow", "operating_cash_flow", "capital_expenditures"
         )
 
+        if fcf is None:
+            return invalid_result(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                reason="Free cash flow unavailable",
+                inputs=inputs,
+                source_filings=filings,
+                ranking_direction=self.ranking_direction,
+            )
         if market_cap is None:
             return invalid_result(
                 ticker=snap.ticker,
@@ -114,7 +126,7 @@ class FreeCashFlowYieldFactor:
                 warnings=("market_cap_missing",),
                 ranking_direction=self.ranking_direction,
             )
-        if market_cap <= 0:
+        if unusable_market_cap(market_cap):
             return invalid_result(
                 ticker=snap.ticker,
                 cik=snap.cik,
@@ -125,18 +137,6 @@ class FreeCashFlowYieldFactor:
                 inputs=inputs,
                 source_filings=filings,
                 warnings=("invalid_market_cap",),
-                ranking_direction=self.ranking_direction,
-            )
-        if fcf is None:
-            return invalid_result(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                reason="Free cash flow unavailable",
-                inputs=inputs,
-                source_filings=filings,
                 ranking_direction=self.ranking_direction,
             )
         return FactorResult(

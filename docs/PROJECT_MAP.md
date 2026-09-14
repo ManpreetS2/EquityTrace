@@ -266,6 +266,7 @@ These must never be violated:
 | Statements | `tests/test_financials.py` |
 | Factors / ranking | `tests/test_factors.py` |
 | Valuation factors | `tests/test_valuation_factors.py` |
+| v0.3b adversarial correctness | `tests/test_v031_adversarial.py` |
 | v0.2 audit | `tests/test_audit_v02.py` |
 | v0.3b factor_values column | `tests/test_migration_v03b.py` |
 | Market provider | `tests/test_market_provider.py` |

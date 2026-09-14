@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -26,6 +27,11 @@ class Factor(Protocol):
         service: FinancialsService,
         market_cap: float | None = None,
     ) -> FactorResult: ...
+
+
+def unusable_market_cap(market_cap: float | None) -> bool:
+    """True when a provided market cap cannot be used in a multiple."""
+    return market_cap is not None and (not math.isfinite(market_cap) or market_cap <= 0)
 
 
 def snapshot_accessions(snapshot: FinancialSnapshot, *concepts: str) -> tuple[str, ...]:

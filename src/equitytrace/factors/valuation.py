@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from equitytrace.factors.base import invalid_result, snapshot_accessions
+from equitytrace.factors.base import invalid_result, snapshot_accessions, unusable_market_cap
 from equitytrace.factors.models import FactorResult
 from equitytrace.financials.models import FinancialPeriod
 from equitytrace.financials.service import FinancialsService
@@ -128,28 +128,6 @@ class PriceToEarningsFactor:
                 filings=filings,
                 ranking_direction=self.ranking_direction,
             )
-        if market_cap is None:
-            return _missing_market_cap(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                inputs=inputs,
-                filings=filings,
-                ranking_direction=self.ranking_direction,
-            )
-        if market_cap <= 0:
-            return _invalid_market_cap(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                inputs=inputs,
-                filings=filings,
-                ranking_direction=self.ranking_direction,
-            )
         if net_income is None:
             return invalid_result(
                 ticker=snap.ticker,
@@ -173,6 +151,28 @@ class PriceToEarningsFactor:
                 inputs=inputs,
                 source_filings=filings,
                 warnings=("non_positive_earnings",),
+                ranking_direction=self.ranking_direction,
+            )
+        if market_cap is None:
+            return _missing_market_cap(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                inputs=inputs,
+                filings=filings,
+                ranking_direction=self.ranking_direction,
+            )
+        if unusable_market_cap(market_cap):
+            return _invalid_market_cap(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                inputs=inputs,
+                filings=filings,
                 ranking_direction=self.ranking_direction,
             )
         return FactorResult(
@@ -220,28 +220,6 @@ class PriceToSalesFactor:
                 filings=filings,
                 ranking_direction=self.ranking_direction,
             )
-        if market_cap is None:
-            return _missing_market_cap(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                inputs=inputs,
-                filings=filings,
-                ranking_direction=self.ranking_direction,
-            )
-        if market_cap <= 0:
-            return _invalid_market_cap(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                inputs=inputs,
-                filings=filings,
-                ranking_direction=self.ranking_direction,
-            )
         if revenue is None:
             return invalid_result(
                 ticker=snap.ticker,
@@ -265,6 +243,28 @@ class PriceToSalesFactor:
                 inputs=inputs,
                 source_filings=filings,
                 warnings=("non_positive_revenue",),
+                ranking_direction=self.ranking_direction,
+            )
+        if market_cap is None:
+            return _missing_market_cap(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                inputs=inputs,
+                filings=filings,
+                ranking_direction=self.ranking_direction,
+            )
+        if unusable_market_cap(market_cap):
+            return _invalid_market_cap(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                inputs=inputs,
+                filings=filings,
                 ranking_direction=self.ranking_direction,
             )
         return FactorResult(
@@ -301,28 +301,6 @@ class PriceToBookFactor:
         equity = snap.require_number("stockholders_equity")
         inputs = _market_cap_inputs(market_cap, stockholders_equity=equity)
         filings = snapshot_accessions(snap, "stockholders_equity")
-        if market_cap is None:
-            return _missing_market_cap(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                inputs=inputs,
-                filings=filings,
-                ranking_direction=self.ranking_direction,
-            )
-        if market_cap <= 0:
-            return _invalid_market_cap(
-                ticker=snap.ticker,
-                cik=snap.cik,
-                factor=self.name,
-                as_of=as_of,
-                period=period,
-                inputs=inputs,
-                filings=filings,
-                ranking_direction=self.ranking_direction,
-            )
         if equity is None:
             return invalid_result(
                 ticker=snap.ticker,
@@ -346,6 +324,28 @@ class PriceToBookFactor:
                 inputs=inputs,
                 source_filings=filings,
                 warnings=("non_positive_equity",),
+                ranking_direction=self.ranking_direction,
+            )
+        if market_cap is None:
+            return _missing_market_cap(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                inputs=inputs,
+                filings=filings,
+                ranking_direction=self.ranking_direction,
+            )
+        if unusable_market_cap(market_cap):
+            return _invalid_market_cap(
+                ticker=snap.ticker,
+                cik=snap.cik,
+                factor=self.name,
+                as_of=as_of,
+                period=period,
+                inputs=inputs,
+                filings=filings,
                 ranking_direction=self.ranking_direction,
             )
         return FactorResult(

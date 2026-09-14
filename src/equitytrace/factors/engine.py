@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from math import isfinite
 from uuid import uuid4
 
 import duckdb
@@ -116,13 +117,19 @@ class FactorEngine:
         parsed = period if isinstance(period, FinancialPeriod) else parse_period(period)
         factor_name = normalize_factor_name(factor)
         factor_obj = get_factor(factor_name)
-        market_caps = market_cap_by_ticker or {}
+        market_caps = {
+            key.strip().upper(): value
+            for key, value in (market_cap_by_ticker or {}).items()
+            if key.strip()
+        }
         results: list[FactorResult] = []
         excluded: list[tuple[str, str]] = []
+        seen: set[str] = set()
         for ticker in tickers:
             symbol = ticker.strip().upper()
-            if not symbol:
+            if not symbol or symbol in seen:
                 continue
+            seen.add(symbol)
             try:
                 result = self.calculate(
                     symbol,
@@ -161,12 +168,15 @@ class FactorEngine:
         symbol = ticker.strip().upper()
         if market_cap is not None:
             # Manual override is not stored market data; provenance stays empty.
+            # Non-finite values cannot be stored on MarketCapResult.
+            finite = isfinite(market_cap)
             override = MarketCapResult(
                 ticker=symbol,
                 market_date_requested=as_of.date(),
                 knowledge_time=as_of,
-                market_cap=Decimal(str(market_cap)),
+                market_cap=Decimal(str(market_cap)) if finite else None,
                 warnings=(_MANUAL_MARKET_CAP_WARNING,),
+                unavailable_reason=None if finite else "non_finite_market_cap",
             )
             return market_cap, override
         native = self._market_cap.get_market_cap(
