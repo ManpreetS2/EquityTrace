@@ -249,6 +249,13 @@ def test_ranking_direction_and_exclusions(db: Database) -> None:
             period="FY2023",
             service=FinancialsService(conn),
         )
+        reversed_rank = rank_factors(
+            tickers=["GAMMA", "BETA", "ALPHA"],
+            factor="revenue-growth",
+            as_of=dt(2024, 3, 1),
+            period="FY2023",
+            service=FinancialsService(conn),
+        )
         debt_ranking = rank_factors(
             tickers=["ALPHA"],
             factor="debt_change",
@@ -257,6 +264,9 @@ def test_ranking_direction_and_exclusions(db: Database) -> None:
             service=FinancialsService(conn),
         )
     assert ranking.valid_count == 2
+    assert [row.result.ticker for row in ranking.rows] == [
+        row.result.ticker for row in reversed_rank.rows
+    ]
     assert any(symbol == "GAMMA" for symbol, _ in ranking.excluded)
     # ALPHA growth 20%, BETA growth 10% → ALPHA rank 1
     assert ranking.rows[0].result.ticker == "ALPHA"
