@@ -85,7 +85,7 @@ Shorter samples are unavailable rather than relabeled as one-year metrics.
 * Start: most recent 253 closes, `bars[-253]`
 * End: `bars[-22]` (skips the latest 21 observations)
 * Ranking: higher is better
-* Unavailable: fewer than 253 closes; start close `<= 0`; ambiguous duplicate
+* Unavailable: fewer than 253 closes; start or end close `<= 0`; ambiguous duplicate
   history
 
 ### 1y volatility (`volatility_1y`)

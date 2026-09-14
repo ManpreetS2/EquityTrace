@@ -34,15 +34,21 @@ def rank_factors(
     factor_name = normalize_factor_name(factor)
     factor_obj = get_factor(factor_name)
     parsed = period if isinstance(period, FinancialPeriod) else parse_period(period)
-    market_caps = market_cap_by_ticker or {}
+    market_caps = {
+        key.strip().upper(): value
+        for key, value in (market_cap_by_ticker or {}).items()
+        if key.strip()
+    }
 
     results: list[FactorResult] = []
     excluded: list[tuple[str, str]] = []
+    seen: set[str] = set()
 
     for ticker in tickers:
         symbol = ticker.strip().upper()
-        if not symbol:
+        if not symbol or symbol in seen:
             continue
+        seen.add(symbol)
         try:
             result = factor_obj.calculate(
                 symbol,
