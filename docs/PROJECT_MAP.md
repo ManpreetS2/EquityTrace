@@ -11,10 +11,11 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `0.3.1.dev0` |
-| Release | last tagged: v0.3.0 |
-| v0.3a | complete |
-| v0.3b | this branch — valuation, momentum, and risk |
+| Package | `equitytrace` `0.3.1` |
+| Release target | `v0.3.1` |
+| v0.3a | complete (v0.3.0) |
+| v0.3b | complete (v0.3.1) |
+| Next milestone | v0.3c — portfolio construction and backtesting |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
@@ -138,7 +139,9 @@ The provider protocol is `market/providers/base.py`. Do not import Twelve Data
 from financials or factors.
 
 Window analytics: `src/equitytrace/market/analytics.py` (stored bars only,
-`PriceAdjustmentMode.ALL`, bounded lookback).
+`PriceAdjustmentMode.ALL`, bounded lookback). Beta intersects common price
+dates before computing returns. `MarketAnalyticsService.rank` owns metric
+ranking; beta ranking is refused.
 
 CLI: `src/equitytrace/cli_market.py`
 (`market ingest|prices|cap|cap-series|analytics|rank-metric`).
@@ -248,6 +251,7 @@ These must never be violated:
 11. `market_data_run` finalization failures must be surfaced (no blanket
     `contextlib.suppress(Exception)`).
 12. Ambiguous financial semantics → `UNAVAILABLE` + reason, never a guess.
+13. Beta aligns common price dates before returns so both series cover identical intervals.
 14. Market-window metrics use adjusted closes and must not claim vintage PIT.
 15. Do not scan unbounded price history for a 1y metric (~550 calendar days).
 
@@ -316,8 +320,8 @@ v0.3a correctness still concentrates here:
 
 ## Roadmap touchpoints
 
-See `docs/roadmap.md`. v0.3a is complete in v0.3.0. This map describes v0.3b
-on `feature/v0.3b-valuation-momentum-risk`. Do not start v0.3c here.
+See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
+v0.3.1. Do not start v0.3c from this map.
 
 ### v0.3a
 
@@ -327,8 +331,8 @@ market CLI.
 
 ### v0.3b
 
-Implemented in existing `factors/` and `market/` packages (no new top-level
-package):
+**Completed** in v0.3.1. Lives in existing `factors/` and `market/` packages
+(no new top-level package):
 
 * native FCF yield from stored market cap
 * P/E, P/S, P/B
@@ -337,7 +341,7 @@ package):
 
 ### v0.3c
 
-**Does not exist yet.** Planned package boundary (do not create in v0.3.0):
+**Does not exist yet.** Planned package boundary (do not create in v0.3.1):
 
 ```text
 src/equitytrace/portfolio/
@@ -406,6 +410,7 @@ uv run pytest \
   tests/test_database.py \
   tests/test_migration_v03b.py \
   tests/test_valuation_factors.py \
+  tests/test_v031_adversarial.py \
   tests/test_market_analytics.py \
   tests/test_market_provider.py \
   tests/test_market_core.py \

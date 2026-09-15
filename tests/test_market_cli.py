@@ -137,7 +137,7 @@ def test_existing_sec_commands_still_work(tmp_path: Path, monkeypatch: pytest.Mo
     clear_settings_cache()
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.3.1.dev0" in result.output
+    assert "0.3.1" in result.output
 
 
 def test_market_analytics_unavailable_is_zero_exit(

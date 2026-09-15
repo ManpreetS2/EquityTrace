@@ -1,9 +1,11 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace v0.3.0 (v0.3a market-data foundation).
+Exact commands for a new developer on EquityTrace v0.3.1 (v0.3b valuation,
+momentum, and risk).
 
-Repository navigation: [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md). Read that
-map before searching the tree; it names the bounded files for each subsystem.
+Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
+[docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
+before searching the tree.
 
 ## 1. Configure environment
 
@@ -47,7 +49,7 @@ editable installs under recent macOS provenance rules.
 uv run equitytrace init-db
 ```
 
-Existing v0.1 databases are upgraded additively by the same command.
+Existing v0.1 / v0.2 / v0.3.0 databases are upgraded additively by the same command.
 
 ## 4. Ingest a company (live SEC)
 
@@ -55,7 +57,7 @@ Existing v0.1 databases are upgraded additively by the same command.
 uv run equitytrace ingest AAPL
 ```
 
-## 5. Explore stored data and statements
+## 5. Explore statements and valuation factors
 
 ```bash
 uv run equitytrace filings AAPL
@@ -63,16 +65,20 @@ uv run equitytrace facts AAPL --concept Revenue
 uv run equitytrace facts-as-of AAPL --date 2024-01-15
 uv run equitytrace statements AAPL --period FY2023
 uv run equitytrace factor AAPL revenue-growth --period FY2023
+uv run equitytrace factor AAPL price-to-book --period FY2023
 uv run equitytrace factors AAPL --period FY2023
 uv run equitytrace db-info
 ```
+
+FCF yield, P/E, P/S, and P/B use stored PIT market cap when prices and shares
+are present. `--market-cap` is an optional override.
 
 Optional multi-name ranking after ingesting more tickers:
 
 ```bash
 uv run equitytrace rank \
   --tickers AAPL,MSFT,GOOGL \
-  --factor revenue-growth \
+  --factor price-to-book \
   --period FY2023
 ```
 
@@ -80,11 +86,14 @@ uv run equitytrace rank \
 
 ```bash
 # set EQUITYTRACE_TWELVE_DATA_API_KEY in .env first
-uv run equitytrace market ingest AAPL --start 2023-01-01 --end 2023-03-31
+uv run equitytrace market ingest AAPL --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market ingest SPY --asset-type etf --start 2020-01-01 --end 2024-12-31
 uv run equitytrace market cap AAPL --date 2023-03-31
+uv run equitytrace market analytics AAPL --as-of 2024-12-31 --benchmark SPY
+uv run equitytrace market rank-metric momentum_12_1 AAPL MSFT --as-of 2024-12-31
 ```
 
-SEC-only workflows do not need a market-data key.
+SEC-only workflows do not need a market-data key. Beta ranking is refused.
 
 ## 7. Run the offline test suite
 
