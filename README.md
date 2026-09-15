@@ -10,10 +10,11 @@ Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
 Version **0.3.1** is the latest release (v0.3b). The `0.3.2.dev0` line adds a
-native **weight-return research backtester**: latest-FY factor selection, exact
-top-N, equal-weight / inverse-vol baselines, drifting weights, and transparent
-costs. It is not an execution simulator and does not invent fill prices or
-share quantities.
+native **weight-return research backtester**: latest-FY factor selection per
+security/ticker, exact top-N, equal-weight / inverse-vol baselines, drifting
+weights, and transparent costs. It is not an execution simulator and does not
+invent fill prices or share quantities. v0.3c does not choose among multiple
+securities/share classes for one issuer.
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
@@ -297,6 +298,8 @@ SEC-only commands continue to work without a market-data API key.
 - Provider-adjusted history is not a vendor-vintage PIT archive
 - Beta has no default ranking direction
 - Native backtests are research weight-return paths, not execution simulations
+- v0.3c native backtests currently require `adjustment_mode=all`; raw close remains valuation-only
+- v0.3c does not yet choose among multiple securities/share classes for one issuer; ambiguous same-issuer universes are unavailable
 - No skfolio optimizer yet (next v0.3c slice)
 - No frontend / research UI
 - Canonical statements are computed on demand (not fully materialized)

@@ -19,6 +19,7 @@ LOOKBACK_CALENDAR_DAYS = 550
 ADJUSTED_HISTORY_WARNING = "provider_adjusted_history_not_vintage_pit"
 SURVIVORSHIP_WARNING = "survivorship_bias_possible"
 MIXED_PERIODS_WARNING = "mixed_fiscal_periods"
+SAME_ISSUER_UNAVAILABLE = "multiple_securities_same_issuer_unsupported"
 
 STANDING_WARNINGS = (ADJUSTED_HISTORY_WARNING, SURVIVORSHIP_WARNING)
 
@@ -48,7 +49,11 @@ class PortfolioBaseline(StrEnum):
 
 
 class BacktestRequest(BaseModel):
-    """Immutable configuration for one research backtest."""
+    """Immutable configuration for one research backtest.
+
+    ``adjustment_mode`` is persisted for provenance. v0.3c native backtests
+    currently require ``PriceAdjustmentMode.ALL``.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -103,6 +108,13 @@ class BacktestRequest(BaseModel):
         if isinstance(value, str):
             text = value.strip().upper()
             return text or None
+        return value
+
+    @field_validator("adjustment_mode")
+    @classmethod
+    def _adjusted_research_path(cls, value: PriceAdjustmentMode) -> PriceAdjustmentMode:
+        if value is not PriceAdjustmentMode.ALL:
+            raise ValueError("v0.3c native backtests require adjustment_mode=all.")
         return value
 
     @model_validator(mode="after")

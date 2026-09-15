@@ -203,6 +203,35 @@ class MarketRepository:
         instruments = [_row_to_instrument(row) for row in rows]
         return {instrument.canonical_symbol: instrument for instrument in instruments}
 
+    def issuer_ciks_for_symbols(self, symbols: Sequence[str]) -> dict[str, str]:
+        """Map research symbols to issuer CIK from instruments, else securities."""
+        cleaned = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+        if not cleaned:
+            return {}
+        instruments = self.get_instruments_by_symbols(cleaned)
+        out: dict[str, str] = {}
+        missing: list[str] = []
+        for symbol in cleaned:
+            instrument = instruments.get(symbol)
+            cik = instrument.issuer_cik if instrument is not None else None
+            if cik:
+                out[symbol] = cik
+            else:
+                missing.append(symbol)
+        for symbol in missing:
+            row = self._conn.execute(
+                """
+                SELECT cik FROM securities
+                WHERE ticker = ?
+                ORDER BY is_primary DESC, cik
+                LIMIT 1
+                """,
+                [symbol],
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                out[symbol] = str(row[0])
+        return out
+
     def get_instrument(self, instrument_id: str) -> MarketInstrument | None:
         row = self._conn.execute(
             """

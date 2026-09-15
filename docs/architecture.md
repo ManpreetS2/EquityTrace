@@ -140,9 +140,16 @@ transports or injected providers. No live SEC or Twelve Data calls in CI.
 11. **Portfolio backtest (`equitytrace.portfolio`)**
    - Weight/notional research model (no fills, shares, or execution)
    - Decision after session `available_at`; target effective next calendar session
-   - Latest FY per issuer (no silent older-year fallback)
+   - Latest FY per security/ticker (no silent older-year fallback)
    - Exact top-N, equal weight, inverse vol on common-date 252-return matrices
    - Drift, gross turnover, symmetric bps costs, leakage audit
+   - Native v0.3c backtests require `adjustment_mode=all` (provider-adjusted
+     research closes). Raw close remains valuation / market-cap only.
+   - Multiple universe securities that share one issuer CIK are unavailable
+     (`multiple_securities_same_issuer_unsupported`); v0.3c does not choose a
+     share class.
+   - Explicit schedules fail closed: every unique requested date must form an
+     in-window (decision, target-effective) pair.
    - skfolio adapter is not implemented yet
 
 Future (not in this tree): skfolio min-variance (remainder of v0.3c) and a

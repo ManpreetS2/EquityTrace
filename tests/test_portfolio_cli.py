@@ -28,6 +28,10 @@ def test_portfolio_help() -> None:
     result = runner.invoke(app, ["portfolio", "--help"])
     assert result.exit_code == 0
     assert "backtest" in result.output
+    backtest_help = runner.invoke(app, ["portfolio", "backtest", "--help"])
+    assert backtest_help.exit_code == 0
+    assert "--adjustment-mode" not in backtest_help.output
+    assert "--adjustment" not in backtest_help.output
 
 
 def test_version_still_dev_line() -> None:
@@ -37,7 +41,7 @@ def test_version_still_dev_line() -> None:
 
 
 def test_successful_toy_backtest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    _prepare(tmp_path, monkeypatch)
+    path = _prepare(tmp_path, monkeypatch)
     result = runner.invoke(
         app,
         [
@@ -64,6 +68,11 @@ def test_successful_toy_backtest(tmp_path: Path, monkeypatch) -> None:  # type: 
     assert result.exit_code == 0
     assert "Final NAV" in result.output
     assert "provider_adjusted_history_not_vintage_pit" in result.output
+    db = initialize_database(path)
+    with db.session() as conn:
+        mode = conn.execute("SELECT adjustment_mode FROM portfolio_runs").fetchone()
+    assert mode is not None
+    assert mode[0] == "all"
 
 
 def test_unavailable_first_rebalance(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

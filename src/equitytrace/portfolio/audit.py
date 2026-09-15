@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from equitytrace.portfolio.models import (
     ADJUSTED_HISTORY_WARNING,
@@ -16,11 +16,13 @@ from equitytrace.portfolio.models import (
 def audit_decision(
     *,
     decision_at: datetime,
+    decision_session_date: date,
     target_effective_at: datetime,
     selection: SignalSelection,
     mixed_periods: bool,
 ) -> list[str]:
     """Return hard leakage failures for one decision. Empty means the decision is clean."""
+    del mixed_periods
     failures: list[str] = []
     if not (decision_at < target_effective_at):
         failures.append("decision_at must be strictly before target_effective_at")
@@ -30,6 +32,9 @@ def audit_decision(
     for known in selection.price_evidence_available_at:
         if known > decision_at:
             failures.append("price evidence available_at is after decision_at")
+    for evidence_date in selection.price_evidence_dates:
+        if evidence_date > decision_session_date:
+            failures.append("price evidence trading date is after decision session")
     return failures
 
 

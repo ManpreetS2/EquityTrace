@@ -95,7 +95,7 @@ market symbol
 
 portfolio backtest
   -> portfolio.calendar (SPY reference sessions)
-  -> financials.list_available_annual_periods + factors.engine (latest FY only)
+  -> financials.list_available_annual_periods + factors.engine (latest FY per ticker)
   -> factors.ranking.rank_factor_results (per-name periods)
   -> portfolio.baselines (equal weight / inverse vol)
   -> portfolio.engine (drift, costs, equity)
@@ -397,6 +397,8 @@ src/equitytrace/portfolio/
 ```
 
 CLI: `equitytrace portfolio backtest`. Persistence: `0.3.0-c` tables.
+v0.3c native backtests currently require `adjustment_mode=all`.
+Same-issuer multi-security universes are unavailable. Explicit dates fail closed.
 
 **skfolio adapter = NOT YET IMPLEMENTED.** Do not add `optimizer.py`,
 `skfolio_adapter.py`, or `constraints.py` in this slice.

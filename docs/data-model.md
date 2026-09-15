@@ -120,14 +120,19 @@ be observed immediately. Corrupt cache files are ignored and replaced.
 Additive v0.3c tables (migration `0.3.0-c`). They persist native weight-return
 research backtests. No fill prices, share quantities, or order ids.
 
-- `portfolio_runs` — config, status, warnings, audit JSON, final NAV, metrics
+- `portfolio_runs` — config, status, warnings, audit JSON, final NAV, metrics.
+  `adjustment_mode` is persisted for provenance; v0.3c native backtests currently
+  require `adjustment_mode=all`.
 - `portfolio_rebalances` — PK `(run_id, decision_at)`; unique
   `(run_id, target_effective_at)`; turnover and cost
 - `portfolio_weight_transitions` — PK `(run_id, decision_at, symbol)`; drifted
-  vs target weights, notional, allocated cost, signal provenance
-- `portfolio_equity` — PK `(run_id, valuation_at)`; session NAV, cash weight,
-  drawdown, optional benchmark NAV
+  vs target weights, notional, allocated cost, signal provenance (including
+  valuation `market_input` when present)
+- `portfolio_equity` — PK `(run_id, valuation_at)`; one post-event row per
+  valuation session (NAV, cash weight, drawdown, optional benchmark NAV)
 
 Writes are one transaction per completed run. A first-rebalance unavailable
 result is still persisted with that status; later unavailable rebalances keep
-zero turnover/cost.
+zero turnover/cost. The request keeps the caller's original tickers.
+Multiple universe securities that share one issuer CIK make the run
+unavailable rather than selecting a share class.

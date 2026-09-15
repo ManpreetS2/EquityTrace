@@ -118,7 +118,9 @@ Shorter samples are unavailable rather than relabeled as one-year metrics.
 ## Portfolio backtest (v0.3c)
 
 Research weight-return model. Not an execution simulator. No fill prices or
-share quantities.
+share quantities. v0.3c native backtests currently require
+`adjustment_mode=all` (provider-adjusted closes) for the research return path.
+Raw close remains valuation / market-cap only.
 
 Standing warnings: `provider_adjusted_history_not_vintage_pit`,
 `survivorship_bias_possible`. Mixed issuer fiscal years add
@@ -133,9 +135,25 @@ Standing warnings: `provider_adjusted_history_not_vintage_pit`,
 
 ### Latest FY signal
 
-Each name uses only its latest annual period known at `decision_at`. If that
-factor is unavailable, the name is excluded. Older fiscal years are not
-substituted.
+Each security/ticker uses only its latest annual period known at `decision_at`.
+If that factor is unavailable, the name is excluded. Older fiscal years are not
+substituted. Fundamentals are issuer-level; v0.3c does not yet choose among
+multiple securities/share classes for one issuer. An explicit universe that
+resolves more than one ticker to the same CIK is unavailable
+(`multiple_securities_same_issuer_unsupported`) rather than guessed.
+
+### Schedules
+
+* `explicit` — first-seen unique dates, then chronological. Every remaining
+  date must be within `[start_date, end_date]`, a stored reference-calendar
+  session, and have a strictly later stored session on or before `end_date`.
+  Otherwise the run is unavailable (`explicit_date_out_of_range`,
+  `calendar_missing`, or `effective_session_out_of_range`). Dates are never
+  silently dropped.
+* `monthly` — last stored in-window reference session of each represented month.
+* `quarterly` — last stored in-window session in March/June/September/December.
+* Monthly/quarterly decisions whose target-effective session is missing or
+  after `end_date` are not executable.
 
 ### Turnover
 
@@ -159,7 +177,9 @@ dates. Sample standard deviation. No forward fill.
 ### Performance
 
 * total return = `final_nav / initial_nav − 1`
-* annualized return = `(final_nav / initial_nav) ** (252 / N) − 1`
+* annualized return = `(final_nav / initial_nav) ** (252 / N) − 1` where `N` is
+  the count of reference-calendar session returns in the requested window,
+  including initial cash-only intervals before the first investment
 * volatility = sample stdev of session returns × `sqrt(252)`
 * Sharpe (rf=0) = mean(session returns) / sample stdev × `sqrt(252)`
 * max drawdown = `min(nav_event / running_peak − 1)` including pre-transition marks

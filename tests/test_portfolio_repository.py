@@ -60,6 +60,32 @@ def test_injected_write_failure_does_not_leave_success_row(
     monkeypatch.setattr(PortfolioRepository, "persist_run", original)
 
 
+def test_duckdb_error_during_execution_is_database_error(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import duckdb
+
+    from equitytrace.repositories.market import MarketRepository
+
+    _seed_two_name_path(db)
+
+    def boom(self: MarketRepository, *args: object, **kwargs: object) -> list[object]:
+        raise duckdb.Error("injected read failure")
+
+    monkeypatch.setattr(MarketRepository, "get_price_bars_for_instruments", boom)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0, D1)),
+    )
+    assert result.status is PortfolioRunStatus.FAILED
+    assert result.failure_reason == "database_error"
+    with db.session() as conn:
+        loaded = PortfolioRepository(conn).get_run(result.run_id)
+    assert loaded is not None
+    assert loaded.status is PortfolioRunStatus.FAILED
+    assert loaded.failure_reason == "database_error"
+
+
 def test_unavailable_later_rebalance_has_zero_cost_rows(db: Database) -> None:
     from datetime import UTC, datetime
 

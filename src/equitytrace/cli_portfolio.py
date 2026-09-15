@@ -14,6 +14,7 @@ from rich.table import Table
 from equitytrace.config import ConfigurationError, Settings, clear_settings_cache, get_settings
 from equitytrace.database import initialize_database
 from equitytrace.factors.registry import UnknownFactorError
+from equitytrace.market.models import PriceAdjustmentMode
 from equitytrace.portfolio.engine import BacktestEngine
 from equitytrace.portfolio.models import (
     BacktestRequest,
@@ -98,7 +99,12 @@ def backtest_cmd(
         str | None,
         typer.Option(
             "--explicit-dates",
-            help="Comma-separated YYYY-MM-DD decision sessions when schedule=explicit.",
+            help=(
+                "Comma-separated YYYY-MM-DD decision sessions when schedule=explicit. "
+                "Duplicates collapse first-seen; every remaining date must be an "
+                "in-window stored calendar session with a later effective session "
+                "on or before --end."
+            ),
         ),
     ] = None,
     calendar_symbol: Annotated[
@@ -141,6 +147,7 @@ def backtest_cmd(
             cost_bps=cost_bps,
             initial_nav=initial_nav,
             explicit_dates=_parse_dates(explicit_dates),
+            adjustment_mode=PriceAdjustmentMode.ALL,
         )
     except (ValueError, UnknownFactorError) as exc:
         _user_error(str(exc))

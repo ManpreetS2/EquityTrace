@@ -33,6 +33,31 @@ def test_request_rejects_invalid_top_n() -> None:
         )
 
 
+def test_request_requires_adjustment_mode_all() -> None:
+    from datetime import date
+
+    from equitytrace.market.models import PriceAdjustmentMode
+
+    kwargs = {
+        "tickers": ("AAA",),
+        "factor": "roa",
+        "top_n": 1,
+        "baseline": PortfolioBaseline.EQUAL_WEIGHT,
+        "start_date": date(2024, 1, 1),
+        "end_date": date(2024, 2, 1),
+        "schedule": PortfolioSchedule.MONTHLY,
+    }
+    accepted = BacktestRequest(**kwargs)
+    assert accepted.adjustment_mode is PriceAdjustmentMode.ALL
+    for mode in (
+        PriceAdjustmentMode.NONE,
+        PriceAdjustmentMode.SPLITS,
+        PriceAdjustmentMode.DIVIDENDS,
+    ):
+        with pytest.raises(ValidationError, match="adjustment_mode=all"):
+            BacktestRequest(**kwargs, adjustment_mode=mode)
+
+
 def test_explicit_schedule_requires_dates() -> None:
     from datetime import date
 

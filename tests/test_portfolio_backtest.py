@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -9,7 +10,13 @@ import pytest
 
 from equitytrace.database import Database
 from equitytrace.financials.service import FinancialsService
+from equitytrace.market.models import PriceAdjustmentMode
 from equitytrace.portfolio.baselines import equal_weight, inverse_volatility
+from equitytrace.portfolio.calendar import (
+    CalendarError,
+    CalendarSession,
+    resolve_rebalance_pairs,
+)
 from equitytrace.portfolio.engine import (
     PortfolioState,
     apply_interval_returns,
@@ -18,14 +25,19 @@ from equitytrace.portfolio.engine import (
 )
 from equitytrace.portfolio.models import (
     MIXED_PERIODS_WARNING,
+    SAME_ISSUER_UNAVAILABLE,
     PortfolioRunStatus,
+    PortfolioSchedule,
     RebalanceStatus,
 )
 from equitytrace.portfolio.returns import ReturnMatrix, aligned_return_matrix
-from equitytrace.portfolio.signals import normalize_universe
+from equitytrace.portfolio.signals import normalize_universe, tickers_sharing_an_issuer
+from equitytrace.repositories.portfolio import PortfolioRepository
 from helpers.financial_fixtures import make_fact
 from helpers.portfolio_fixtures import (
     add_adjusted_bars,
+    add_share_class,
+    annual_fcf_facts,
     annual_roa_facts,
     explicit_request,
     run_backtest,
@@ -100,6 +112,44 @@ def test_pre_transition_mark_is_drawdown_peak(db: Database) -> None:
     highs = [row.pre_cost_nav for row in result.rebalances if row.status is RebalanceStatus.SUCCESS]
     assert any(nav == pytest.approx(1.04895) for nav in highs)
     assert result.metrics.max_drawdown == pytest.approx((result.final_nav or 0.0) / 1.04895 - 1.0)
+
+
+def test_equity_points_are_post_event_and_preserve_pre_cost_peak(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0, D1), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    assert result.equity
+    first = result.equity[0]
+    assert first.nav == pytest.approx(1.0)
+    assert first.cash_weight == pytest.approx(1.0)
+    assert first.drawdown == pytest.approx(0.0)
+    success = [row for row in result.rebalances if row.status is RebalanceStatus.SUCCESS]
+    by_time = {point.valuation_at: point for point in result.equity}
+    assert len(by_time) == len(result.equity)
+    peak = 1.0
+    for reb in success:
+        point = by_time[reb.target_effective_at]
+        assert point.nav == pytest.approx(reb.post_cost_nav)
+        assert point.cash_weight == pytest.approx(0.0)
+        peak = max(peak, reb.pre_cost_nav)
+        assert point.drawdown == pytest.approx(point.nav / peak - 1.0)
+        assert point.nav != pytest.approx(reb.pre_cost_nav) or reb.cost_amount == 0.0
+    assert any(row.pre_cost_nav == pytest.approx(1.04895) for row in success)
+    assert result.metrics is not None
+    assert result.metrics.max_drawdown == pytest.approx((result.final_nav or 0.0) / 1.04895 - 1.0)
+    assert result.equity[-1].nav == pytest.approx(result.final_nav or 0.0)
+    with db.session() as conn:
+        loaded = PortfolioRepository(conn).get_run(result.run_id)
+    assert loaded is not None
+    assert len(loaded.equity) == len(result.equity)
+    for got, expected in zip(loaded.equity, result.equity, strict=True):
+        assert got.valuation_at == expected.valuation_at
+        assert got.nav == pytest.approx(expected.nav)
+        assert got.cash_weight == pytest.approx(expected.cash_weight)
+        assert got.drawdown == pytest.approx(expected.drawdown)
 
 
 def _seed_two_name_path(
@@ -186,6 +236,7 @@ def test_first_rebalance_unavailable_when_universe_too_small(db: Database) -> No
     )
     assert result.status is PortfolioRunStatus.UNAVAILABLE
     assert result.failure_reason == "factor_universe_too_small"
+    assert MIXED_PERIODS_WARNING not in result.warnings
 
 
 def test_later_target_support_missing_holds_drifted_state(db: Database) -> None:
@@ -400,6 +451,168 @@ def test_mixed_fiscal_periods_warning(db: Database) -> None:
     assert "FY2024" in periods
 
 
+def test_mixed_fiscal_periods_warning_survives_unavailable_target_support(db: Database) -> None:
+    days = [D0, D1, D2, D3]
+    fy24 = datetime(2024, 1, 3, 12, 0, tzinfo=UTC)
+    with db.session() as conn:
+        seed_issuer(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            facts=annual_roa_facts(
+                cik="0001000001",
+                fiscal_year=2023,
+                net_income=20.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=KNOWN,
+                accession="aaa-2023",
+            )
+            + annual_roa_facts(
+                cik="0001000001",
+                fiscal_year=2024,
+                net_income=18.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=fy24,
+                accession="aaa-2024",
+            ),
+        )
+        seed_issuer(
+            conn,
+            ticker="BBB",
+            cik="0001000002",
+            facts=annual_roa_facts(
+                cik="0001000002",
+                fiscal_year=2023,
+                net_income=10.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=KNOWN,
+                accession="bbb-2023",
+            ),
+        )
+        seed_issuer(
+            conn,
+            ticker="CCC",
+            cik="0001000003",
+            facts=annual_roa_facts(
+                cik="0001000003",
+                fiscal_year=2023,
+                net_income=50.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=fy24,
+                accession="ccc-2023",
+            ),
+        )
+        add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "AAA", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "BBB", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "CCC", [(day, 100.0) for day in days], skip_dates={D2})
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB", "CCC"), start=D0, end=D3, decisions=(D0, D1), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    success = [row for row in result.rebalances if row.status is RebalanceStatus.SUCCESS]
+    later = [row for row in result.rebalances if row.status is RebalanceStatus.UNAVAILABLE]
+    assert len(success) == 1
+    first_held = {row.symbol for row in success[0].transitions if row.target_weight_after > 0}
+    assert first_held == {"AAA", "BBB"}
+    assert later
+    assert later[0].reason == "target_support_missing"
+    assert later[0].gross_turnover == 0.0
+    assert later[0].cost_amount == 0.0
+    assert later[0].transitions == ()
+    assert later[0].post_cost_nav == pytest.approx(later[0].pre_cost_nav)
+    assert MIXED_PERIODS_WARNING in result.warnings
+
+
+def test_valuation_signal_provenance_keeps_market_input(db: Database) -> None:
+    days = [D0, D1, D2, D3]
+    with db.session() as conn:
+        seed_issuer(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            facts=annual_fcf_facts(
+                cik="0001000001",
+                fiscal_year=2023,
+                operating_cash_flow=40.0,
+                capex=-10.0,
+                shares=10.0,
+                available_at=KNOWN,
+                accession="aaa-fcf-2023",
+                shares_accession="aaa-shares-2023",
+            ),
+        )
+        seed_issuer(
+            conn,
+            ticker="BBB",
+            cik="0001000002",
+            facts=annual_fcf_facts(
+                cik="0001000002",
+                fiscal_year=2023,
+                operating_cash_flow=20.0,
+                capex=-5.0,
+                shares=10.0,
+                available_at=KNOWN,
+                accession="bbb-fcf-2023",
+                shares_accession="bbb-shares-2023",
+            ),
+        )
+        add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        for ticker, cik in (("AAA", "0001000001"), ("BBB", "0001000002")):
+            points = [(day, 30.0) for day in days]
+            add_adjusted_bars(conn, ticker, points, issuer_cik=cik)
+            add_adjusted_bars(
+                conn,
+                ticker,
+                points,
+                issuer_cik=cik,
+                adjustment_mode=PriceAdjustmentMode.NONE,
+            )
+    result = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=D0,
+            end=D3,
+            decisions=(D0,),
+            top_n=1,
+            factor="fcf_yield",
+        ),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    selected = [
+        row for reb in result.rebalances for row in reb.transitions if row.target_weight_after > 0
+    ]
+    assert selected
+    payload = json.loads(selected[0].signal_provenance_json or "{}")
+    assert payload["factor"] == "fcf_yield"
+    assert payload["ticker"] == "AAA"
+    assert payload["cik"] == "0001000001"
+    assert payload["period"] == "FY2023"
+    assert payload["as_of"]
+    assert payload["inputs"]["free_cash_flow"] is not None
+    assert "aaa-fcf-2023" in payload["source_filings"]
+    market = payload["market_input"]
+    assert market is not None
+    assert market["price_adjustment_mode"] == PriceAdjustmentMode.NONE.value
+    assert market["raw_close"] is not None
+    assert market["shares_outstanding"] is not None
+    assert market["sec_accession"] == "aaa-shares-2023"
+    assert market["sec_concept"] == "CommonStockSharesOutstanding"
+    assert market["sec_form"] == "10-K"
+    with db.session() as conn:
+        loaded = PortfolioRepository(conn).get_run(result.run_id)
+    assert loaded is not None
+    stored = json.loads(loaded.rebalances[0].transitions[0].signal_provenance_json or "{}")
+    assert stored["market_input"]["price_adjustment_mode"] == "none"
+    assert stored["market_input"]["sec_accession"] == "aaa-shares-2023"
+
+
 def test_universe_order_and_mixed_case_duplicates_are_deterministic(db: Database) -> None:
     _seed_two_name_path(db)
     a = run_backtest(
@@ -535,6 +748,272 @@ def test_normalize_universe_first_wins() -> None:
     assert normalize_universe(("aaa", "BBB", "AAA", "bbb")) == ["AAA", "BBB"]
 
 
+def test_tickers_sharing_an_issuer_does_not_pick_a_class() -> None:
+    shared = tickers_sharing_an_issuer(
+        {"GOOG": "0001652044", "GOOGL": "0001652044", "MSFT": "0000789019"}
+    )
+    assert shared == {"0001652044": ("GOOG", "GOOGL")}
+    assert tickers_sharing_an_issuer({"AAA": "1", "BBB": "2"}) == {}
+
+
+def test_same_issuer_two_securities_are_unavailable(db: Database) -> None:
+    days = [D0, D1, D2, D3]
+    with db.session() as conn:
+        seed_issuer(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            facts=annual_roa_facts(
+                cik="0001000001",
+                fiscal_year=2023,
+                net_income=20.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=KNOWN,
+                accession="aaa-2023",
+            ),
+        )
+        add_share_class(conn, ticker="AAB", cik="0001000001")
+        add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "AAA", [(day, 100.0) for day in days], issuer_cik="0001000001")
+        add_adjusted_bars(conn, "AAB", [(day, 110.0) for day in days], issuer_cik="0001000001")
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "AAB"), start=D0, end=D3, decisions=(D0,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == SAME_ISSUER_UNAVAILABLE
+    assert result.request.tickers == ("AAA", "AAB")
+    assert result.universe == ("AAA", "AAB")
+    assert result.rebalances == ()
+    assert result.final_nav is None
+    assert result.metrics is not None
+    assert result.metrics.transaction_cost_total == 0.0
+    assert result.metrics.successful_rebalance_count == 0
+
+
+def test_same_issuer_is_unavailable_even_for_top_n_one(db: Database) -> None:
+    days = [D0, D1, D2, D3]
+    with db.session() as conn:
+        seed_issuer(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            facts=annual_roa_facts(
+                cik="0001000001",
+                fiscal_year=2023,
+                net_income=20.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=KNOWN,
+                accession="aaa-2023",
+            ),
+        )
+        add_share_class(conn, ticker="AAB", cik="0001000001")
+        add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "AAA", [(day, 100.0) for day in days], issuer_cik="0001000001")
+        add_adjusted_bars(conn, "AAB", [(day, 100.0) for day in days], issuer_cik="0001000001")
+    result = run_backtest(
+        db,
+        explicit_request(("AAB", "AAA"), start=D0, end=D3, decisions=(D0,), top_n=1),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == SAME_ISSUER_UNAVAILABLE
+    assert result.request.tickers == ("AAB", "AAA")
+
+
+def test_distinct_issuers_remain_available(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    held = {
+        row.symbol
+        for reb in result.rebalances
+        for row in reb.transitions
+        if row.target_weight_after > 0
+    }
+    assert held == {"AAA", "BBB"}
+
+
+def _calendar(days: tuple[date, ...]) -> list[CalendarSession]:
+    return [
+        CalendarSession(
+            trading_date=day,
+            available_at=datetime(day.year, day.month, day.day, 21, 15, tzinfo=UTC),
+            instrument_id="cal",
+        )
+        for day in days
+    ]
+
+
+def test_explicit_pairs_reject_out_of_range_and_missing_effective() -> None:
+    sessions = _calendar((D0, D1, D2, D3))
+    with pytest.raises(CalendarError) as before_start:
+        resolve_rebalance_pairs(
+            sessions,
+            schedule=PortfolioSchedule.EXPLICIT,
+            start_date=D0,
+            end_date=D3,
+            explicit_dates=(date(2023, 12, 29),),
+        )
+    assert before_start.value.reason == "explicit_date_out_of_range"
+    with pytest.raises(CalendarError) as after_end:
+        resolve_rebalance_pairs(
+            sessions,
+            schedule=PortfolioSchedule.EXPLICIT,
+            start_date=D0,
+            end_date=D3,
+            explicit_dates=(date(2024, 1, 8),),
+        )
+    assert after_end.value.reason == "explicit_date_out_of_range"
+    with pytest.raises(CalendarError) as no_next:
+        resolve_rebalance_pairs(
+            sessions,
+            schedule=PortfolioSchedule.EXPLICIT,
+            start_date=D0,
+            end_date=D3,
+            explicit_dates=(D3,),
+        )
+    assert no_next.value.reason == "calendar_missing"
+    with pytest.raises(CalendarError) as effective_after:
+        resolve_rebalance_pairs(
+            sessions,
+            schedule=PortfolioSchedule.EXPLICIT,
+            start_date=D0,
+            end_date=D1,
+            explicit_dates=(D1,),
+        )
+    assert effective_after.value.reason == "effective_session_out_of_range"
+
+
+def test_explicit_date_before_start_is_unavailable(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(date(2024, 1, 1),), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "explicit_date_out_of_range"
+    assert result.rebalances == ()
+
+
+def test_explicit_date_after_end_is_unavailable(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(date(2024, 1, 8),), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "explicit_date_out_of_range"
+
+
+def test_explicit_last_session_without_next_is_unavailable(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D3,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "calendar_missing"
+
+
+def test_explicit_effective_after_end_is_unavailable(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D1, decisions=(D1,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "effective_session_out_of_range"
+
+
+def test_explicit_in_range_missing_session_is_unavailable(db: Database) -> None:
+    days = [D0, D2, D3]
+    with db.session() as conn:
+        seed_issuer(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            facts=annual_roa_facts(
+                cik="0001000001",
+                fiscal_year=2023,
+                net_income=20.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=KNOWN,
+                accession="aaa-2023",
+            ),
+        )
+        seed_issuer(
+            conn,
+            ticker="BBB",
+            cik="0001000002",
+            facts=annual_roa_facts(
+                cik="0001000002",
+                fiscal_year=2023,
+                net_income=10.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=KNOWN,
+                accession="bbb-2023",
+            ),
+        )
+        add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "AAA", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "BBB", [(day, 100.0) for day in days])
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D1,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "calendar_missing"
+
+
+def test_unsorted_explicit_dates_are_deterministic(db: Database) -> None:
+    _seed_two_name_path(db)
+    forward = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0, D1), top_n=2),
+    )
+    reverse = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D1, D0), top_n=2),
+    )
+    assert forward.status is PortfolioRunStatus.SUCCESS
+    assert reverse.status is PortfolioRunStatus.SUCCESS
+    assert [row.decision_at for row in forward.rebalances] == [
+        row.decision_at for row in reverse.rebalances
+    ]
+    assert forward.final_nav == reverse.final_nav
+    assert len(forward.rebalances) == 2
+
+
+def test_duplicate_explicit_dates_collapse_first_seen(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0, D0, D1), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    assert result.request.explicit_dates == (D0, D0, D1)
+    assert len(result.rebalances) == 2
+    assert [row.decision_at.date() for row in result.rebalances] == [D0, D1]
+
+
+def test_explicit_dates_are_not_silently_omitted(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0, D1), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    unique = tuple(dict.fromkeys((D0, D1)))
+    assert len(result.rebalances) == len(unique)
+
+
 def test_explicit_date_not_silently_moved(db: Database) -> None:
     _seed_two_name_path(db)
     result = run_backtest(
@@ -543,12 +1022,12 @@ def test_explicit_date_not_silently_moved(db: Database) -> None:
             ("AAA", "BBB"),
             start=D0,
             end=D3,
-            decisions=(date(2024, 1, 1),),  # Sunday, not a stored session
+            decisions=(date(2024, 1, 1),),
             top_n=2,
         ),
     )
     assert result.status is PortfolioRunStatus.UNAVAILABLE
-    assert result.failure_reason == "calendar_missing"
+    assert result.failure_reason == "explicit_date_out_of_range"
 
 
 def test_benchmark_gap_does_not_mutate_weights(db: Database) -> None:

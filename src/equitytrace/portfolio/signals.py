@@ -1,7 +1,8 @@
-"""Latest-FY-per-issuer factor resolution and exact top-N selection."""
+"""Latest-FY factor resolution per security/ticker and exact top-N selection."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 
 from equitytrace.factors.engine import FactorEngine
@@ -26,15 +27,32 @@ def normalize_universe(tickers: tuple[str, ...] | list[str]) -> list[str]:
     return out
 
 
+def tickers_sharing_an_issuer(cik_by_symbol: Mapping[str, str]) -> dict[str, tuple[str, ...]]:
+    """Group universe tickers that resolve to the same issuer CIK.
+
+    Does not pick a share class. Callers should fail closed when the result
+    is non-empty.
+    """
+    grouped: dict[str, list[str]] = {}
+    for symbol, cik in cik_by_symbol.items():
+        issuer = cik.strip()
+        if not issuer:
+            continue
+        grouped.setdefault(issuer, []).append(symbol)
+    return {cik: tuple(names) for cik, names in grouped.items() if len(names) > 1}
+
+
 def resolve_latest_annual_factor(
     engine: FactorEngine,
     ticker: str,
     factor: str,
     decision_at: datetime,
 ) -> tuple[FactorResult | None, str | None, datetime | None]:
-    """Calculate the factor on the latest FY known at ``decision_at``.
+    """Calculate the factor on the latest FY known for this ticker at ``decision_at``.
 
-    Older fiscal years are never substituted when the latest year is unusable.
+    Fundamentals are issuer-level, but eligibility is resolved per security
+    ticker. Older fiscal years are never substituted when the latest year is
+    unusable.
     """
     periods = engine.financials.list_available_annual_periods(ticker, decision_at)
     if not periods:

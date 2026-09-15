@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import pytest
+
 from equitytrace.database import Database
 from equitytrace.portfolio.models import PortfolioRunStatus
 from helpers.financial_fixtures import make_fact
@@ -158,3 +160,71 @@ def test_future_calendar_session_is_ignored(db: Database) -> None:
     second = run_backtest(db, request)
     assert len(second.rebalances) == len(first.rebalances)
     assert second.final_nav == first.final_nav
+
+
+def test_audit_rejects_future_price_trading_date() -> None:
+    from equitytrace.portfolio.audit import audit_decision
+    from equitytrace.portfolio.models import SignalSelection
+
+    decision_session = date(2024, 1, 3)
+    decision_at = datetime(2024, 1, 3, 21, 15, tzinfo=UTC)
+    selection = SignalSelection(
+        ranked=(),
+        price_evidence_available_at=(datetime(2024, 1, 2, tzinfo=UTC),),
+        price_evidence_dates=(date(2024, 1, 4),),
+    )
+    failures = audit_decision(
+        decision_at=decision_at,
+        decision_session_date=decision_session,
+        target_effective_at=datetime(2024, 1, 4, 21, 15, tzinfo=UTC),
+        selection=selection,
+        mixed_periods=False,
+    )
+    assert failures
+    assert any("trading date" in item for item in failures)
+
+
+def test_leakage_detected_preserves_failed_audit(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from equitytrace.portfolio.engine import BacktestEngine
+    from equitytrace.portfolio.models import LeakageAuditResult
+    from equitytrace.repositories.portfolio import PortfolioRepository
+
+    _seed_two_name_path(db)
+    original = BacktestEngine._form_target
+
+    def tainted(
+        self: BacktestEngine,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        target = original(self, *args, **kwargs)
+        selection = target.selection.model_copy(
+            update={
+                "price_evidence_available_at": (datetime(2020, 1, 1, tzinfo=UTC),),
+                "price_evidence_dates": (date(2099, 1, 1),),
+            }
+        )
+        return target.model_copy(update={"selection": selection})
+
+    monkeypatch.setattr(BacktestEngine, "_form_target", tainted)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0, D1), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.FAILED
+    assert result.failure_reason == "leakage_detected"
+    assert result.audit is not None
+    assert result.audit.passed is False
+    assert result.audit.failures
+    assert any("trading date" in item for item in result.audit.failures)
+    with db.session() as conn:
+        loaded = PortfolioRepository(conn).get_run(result.run_id)
+    assert loaded is not None
+    assert loaded.status is PortfolioRunStatus.FAILED
+    assert loaded.failure_reason == "leakage_detected"
+    assert loaded.audit is not None
+    assert loaded.audit.passed is False
+    assert loaded.audit.failures == result.audit.failures
+    LeakageAuditResult.model_validate(loaded.audit.model_dump())

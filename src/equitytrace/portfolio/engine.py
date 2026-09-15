@@ -26,18 +26,19 @@ from equitytrace.portfolio.baselines import (
 from equitytrace.portfolio.calendar import (
     CalendarError,
     CalendarSession,
-    next_session,
-    resolve_decision_sessions,
+    resolve_rebalance_pairs,
     sessions_from_bars,
 )
 from equitytrace.portfolio.metrics import compute_metrics
 from equitytrace.portfolio.models import (
+    SAME_ISSUER_UNAVAILABLE,
     STANDING_WARNINGS,
     WEIGHT_TOLERANCE,
     BacktestRequest,
     BacktestResult,
     EquityPoint,
     FormedTarget,
+    LeakageAuditResult,
     PerformanceMetrics,
     PortfolioBaseline,
     PortfolioRunStatus,
@@ -52,6 +53,7 @@ from equitytrace.portfolio.signals import (
     resolve_latest_annual_factor,
     select_exact_top_n,
     selected_symbols,
+    tickers_sharing_an_issuer,
 )
 from equitytrace.repositories.market import MarketRepository
 from equitytrace.repositories.portfolio import PortfolioRepository
@@ -64,8 +66,9 @@ class PortfolioUnavailable(RuntimeError):
 
 
 class PortfolioFailed(RuntimeError):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, audit: LeakageAuditResult | None = None) -> None:
         self.reason = reason
+        self.audit = audit
         super().__init__(reason)
 
 
@@ -184,7 +187,14 @@ class BacktestEngine:
                 exc.reason,
             )
         except PortfolioFailed as exc:
-            result = self._terminal(run_id, request, created, PortfolioRunStatus.FAILED, exc.reason)
+            result = self._terminal(
+                run_id,
+                request,
+                created,
+                PortfolioRunStatus.FAILED,
+                exc.reason,
+                audit=exc.audit,
+            )
         except CalendarError as exc:
             result = self._terminal(
                 run_id,
@@ -192,6 +202,14 @@ class BacktestEngine:
                 created,
                 PortfolioRunStatus.UNAVAILABLE,
                 exc.reason,
+            )
+        except duckdb.Error:
+            result = self._terminal(
+                run_id,
+                request,
+                created,
+                PortfolioRunStatus.FAILED,
+                "database_error",
             )
         if persist:
             try:
@@ -215,6 +233,9 @@ class BacktestEngine:
         universe = normalize_universe(request.tickers)
         if not universe:
             raise PortfolioUnavailable("factor_universe_too_small")
+        issuer_ciks = self._market.issuer_ciks_for_symbols(universe)
+        if tickers_sharing_an_issuer(issuer_ciks):
+            raise PortfolioUnavailable(SAME_ISSUER_UNAVAILABLE)
 
         calendar_symbol = request.calendar_symbol
         needed = list(dict.fromkeys([*universe, calendar_symbol]))
@@ -235,7 +256,22 @@ class BacktestEngine:
             provider=request.provider,
         )
         bars_by_symbol = _group_bars(raw_bars, instruments)
-        calendar_sessions = sessions_from_bars(bars_by_symbol.get(calendar_symbol, []))
+        calendar_bars = list(bars_by_symbol.get(calendar_symbol, []))
+        _, stored_max = self._market.get_stored_date_range(
+            calendar_instrument.instrument_id,
+            adjustment_mode=request.adjustment_mode,
+            provider=request.provider,
+        )
+        if stored_max is not None and stored_max > request.end_date:
+            extra_calendar = self._market.get_price_bars_for_instruments(
+                [calendar_instrument.instrument_id],
+                start_date=request.end_date + timedelta(days=1),
+                end_date=stored_max,
+                adjustment_mode=request.adjustment_mode,
+                provider=request.provider,
+            )
+            calendar_bars.extend(extra_calendar)
+        calendar_sessions = sessions_from_bars(calendar_bars)
         window = [
             session
             for session in calendar_sessions
@@ -244,25 +280,13 @@ class BacktestEngine:
         if not window:
             raise PortfolioUnavailable("calendar_missing")
 
-        decisions = resolve_decision_sessions(
+        pairs = resolve_rebalance_pairs(
             calendar_sessions,
             schedule=request.schedule,
             start_date=request.start_date,
             end_date=request.end_date,
             explicit_dates=request.explicit_dates,
         )
-        pairs: list[tuple[CalendarSession, CalendarSession]] = []
-        for decision in decisions:
-            effective = next_session(calendar_sessions, decision)
-            if effective is None:
-                continue
-            if not (request.start_date <= decision.trading_date <= request.end_date):
-                continue
-            if effective.trading_date > request.end_date:
-                continue
-            pairs.append((decision, effective))
-        if not pairs:
-            raise PortfolioUnavailable("calendar_missing")
         effective_map = {effective.trading_date: decision for decision, effective in pairs}
 
         state = PortfolioState(nav=request.initial_nav, cash_weight=1.0, asset_weights={})
@@ -272,7 +296,7 @@ class BacktestEngine:
         rebalances: list[RebalanceRecord] = []
         equity: list[EquityPoint] = []
         nav_events: list[float] = [request.initial_nav]
-        session_navs: list[float] = [request.initial_nav]
+        session_navs: list[float] = []
         peak = request.initial_nav
         first_success = False
         benchmark_nav: float | None = request.initial_nav if request.benchmark_symbol else None
@@ -303,16 +327,6 @@ class BacktestEngine:
                         _append_unique(warnings, "benchmark_unavailable")
                     else:
                         benchmark_nav = benchmark_nav * (1.0 + bench_ret)
-                drawdown = state.nav / peak - 1.0
-                equity.append(
-                    EquityPoint(
-                        valuation_at=session.available_at,
-                        nav=state.nav,
-                        cash_weight=state.cash_weight,
-                        drawdown=drawdown,
-                        benchmark_nav=benchmark_nav if benchmark_ok else None,
-                    )
-                )
 
             decision_session = effective_map.get(session.trading_date)
             if decision_session is not None:
@@ -331,16 +345,20 @@ class BacktestEngine:
                     first_success = True
                     peak = max(peak, attempt.record.pre_cost_nav)
                     nav_events.append(attempt.record.post_cost_nav)
-                    drawdown = state.nav / peak - 1.0
-                    if equity:
-                        equity[-1] = equity[-1].model_copy(
-                            update={"drawdown": min(equity[-1].drawdown, drawdown)}
-                        )
                 rebalances.append(attempt.record)
                 mixed = mixed or attempt.selection_mixed
 
-            if prev is not None:
-                session_navs.append(state.nav)
+            drawdown = state.nav / peak - 1.0
+            equity.append(
+                EquityPoint(
+                    valuation_at=session.available_at,
+                    nav=state.nav,
+                    cash_weight=state.cash_weight,
+                    drawdown=drawdown,
+                    benchmark_nav=benchmark_nav if benchmark_ok else None,
+                )
+            )
+            session_navs.append(state.nav)
             prev = session
 
         if not first_success:
@@ -355,7 +373,7 @@ class BacktestEngine:
             extra_warnings=extra,
         )
         if not audit.passed:
-            raise PortfolioFailed("leakage_detected")
+            raise PortfolioFailed("leakage_detected", audit=audit)
 
         metrics = compute_metrics(
             initial_nav=request.initial_nav,
@@ -410,6 +428,7 @@ class BacktestEngine:
         leakage_failures.extend(
             audit_decision(
                 decision_at=decision.available_at,
+                decision_session_date=decision.trading_date,
                 target_effective_at=effective.available_at,
                 selection=target.selection,
                 mixed_periods=mixed,
@@ -418,7 +437,13 @@ class BacktestEngine:
         if not self._targets_supported(target.weights, bars_by_symbol, effective):
             if not first_success:
                 raise PortfolioUnavailable("target_support_missing")
-            return _unavailable_rebalance(decision, effective, state, "target_support_missing")
+            return _unavailable_rebalance(
+                decision,
+                effective,
+                state,
+                "target_support_missing",
+                mixed=mixed,
+            )
 
         before = dict(state.asset_weights)
         outcome = apply_weight_transition(
@@ -567,15 +592,16 @@ class BacktestEngine:
         created: datetime,
         status: PortfolioRunStatus,
         reason: str,
+        audit: LeakageAuditResult | None = None,
     ) -> BacktestResult:
-        warnings = list(STANDING_WARNINGS)
-        audit = build_audit_result(failures=[], mixed_periods=False)
+        if audit is None:
+            audit = build_audit_result(failures=[], mixed_periods=False)
         return BacktestResult(
             run_id=run_id,
             status=status,
             request=request,
             failure_reason=reason,
-            warnings=tuple(warnings),
+            warnings=tuple(audit.warnings),
             created_at=created,
             completed_at=utc_now(),
             universe=tuple(normalize_universe(request.tickers)),
@@ -668,6 +694,8 @@ def _unavailable_rebalance(
     effective: CalendarSession,
     state: PortfolioState,
     reason: str,
+    *,
+    mixed: bool = False,
 ) -> _RebalanceAttempt:
     record = RebalanceRecord(
         decision_at=decision.available_at,
@@ -680,7 +708,26 @@ def _unavailable_rebalance(
         cost_amount=0.0,
         transitions=(),
     )
-    return _RebalanceAttempt(record=record, selection_mixed=False)
+    return _RebalanceAttempt(record=record, selection_mixed=mixed)
+
+
+def _signal_provenance_json(result: FactorResult) -> str:
+    payload = {
+        "factor": result.factor,
+        "ticker": result.ticker,
+        "cik": result.cik,
+        "as_of": result.as_of.isoformat(),
+        "period": result.period.label(),
+        "ranking_direction": result.ranking_direction,
+        "inputs": result.inputs,
+        "source_filings": list(result.source_filings),
+        "warnings": list(result.warnings),
+        "unavailable_reason": result.unavailable_reason,
+        "market_input": (
+            result.market_input.model_dump(mode="json") if result.market_input is not None else None
+        ),
+    }
+    return json.dumps(payload, sort_keys=True)
 
 
 def _transition_rows(
@@ -714,14 +761,7 @@ def _transition_rows(
             signal_value = ranked_row.result.value
             signal_rank = ranked_row.rank
             signal_period = ranked_row.result.period.label()
-            provenance = json.dumps(
-                {
-                    "warnings": list(ranked_row.result.warnings),
-                    "source_filings": list(ranked_row.result.source_filings),
-                    "unavailable_reason": ranked_row.result.unavailable_reason,
-                },
-                sort_keys=True,
-            )
+            provenance = _signal_provenance_json(ranked_row.result)
         rows.append(
             WeightTransition(
                 symbol=symbol,

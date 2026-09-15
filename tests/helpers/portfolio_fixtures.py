@@ -8,7 +8,7 @@ from decimal import Decimal
 from equitytrace.database import Database
 from equitytrace.market.availability import bar_available_at
 from equitytrace.market.models import DailyPriceBar, MarketDataProviderName, PriceAdjustmentMode
-from equitytrace.models import FinancialFact
+from equitytrace.models import FinancialFact, Security
 from equitytrace.portfolio.engine import BacktestEngine
 from equitytrace.portfolio.models import (
     BacktestRequest,
@@ -39,9 +39,15 @@ def add_adjusted_bars(
     *,
     available_at: dict[date, datetime] | None = None,
     skip_dates: set[date] | None = None,
+    issuer_cik: str | None = None,
+    adjustment_mode: PriceAdjustmentMode = PriceAdjustmentMode.ALL,
 ) -> str:
     repo = MarketRepository(conn)  # type: ignore[arg-type]
-    instrument = repo.get_or_create_instrument(ticker, security_ticker=ticker)
+    instrument = repo.get_or_create_instrument(
+        ticker,
+        security_ticker=ticker,
+        issuer_cik=issuer_cik,
+    )
     bars: list[DailyPriceBar] = []
     skipped = skip_dates or set()
     for day, close in points:
@@ -54,7 +60,7 @@ def add_adjusted_bars(
                 instrument_id=instrument.instrument_id,
                 provider=MarketDataProviderName.TWELVE_DATA,
                 trading_date=day,
-                adjustment_mode=PriceAdjustmentMode.ALL,
+                adjustment_mode=adjustment_mode,
                 open=price,
                 high=price,
                 low=price,
@@ -136,6 +142,61 @@ def annual_roa_facts(
     ]
 
 
+def annual_fcf_facts(
+    *,
+    cik: str,
+    fiscal_year: int,
+    operating_cash_flow: float,
+    capex: float,
+    shares: float,
+    available_at: datetime,
+    accession: str,
+    shares_accession: str,
+    form: str = "10-K",
+) -> list[FinancialFact]:
+    start = date(fiscal_year, 1, 1)
+    end = date(fiscal_year, 12, 31)
+    return [
+        make_fact(
+            cik=cik,
+            concept="NetCashProvidedByUsedInOperatingActivities",
+            value=operating_cash_flow,
+            start=start,
+            end=end,
+            available_at=available_at,
+            accession=accession,
+            form=form,
+            fiscal_year=fiscal_year,
+            fiscal_period="FY",
+        ),
+        make_fact(
+            cik=cik,
+            concept="PaymentsToAcquirePropertyPlantAndEquipment",
+            value=capex,
+            start=start,
+            end=end,
+            available_at=available_at,
+            accession=accession,
+            form=form,
+            fiscal_year=fiscal_year,
+            fiscal_period="FY",
+        ),
+        make_fact(
+            cik=cik,
+            concept="CommonStockSharesOutstanding",
+            value=shares,
+            unit="shares",
+            start=None,
+            end=end,
+            available_at=available_at,
+            accession=shares_accession,
+            form=form,
+            fiscal_year=fiscal_year,
+            fiscal_period="FY",
+        ),
+    ]
+
+
 def seed_issuer(
     conn: object,
     *,
@@ -144,6 +205,20 @@ def seed_issuer(
     facts: list[FinancialFact],
 ) -> None:
     seed_company(conn, ticker=ticker, cik=cik, legal_name=f"{ticker} Corp", facts=facts)
+
+
+def add_share_class(
+    conn: object,
+    *,
+    ticker: str,
+    cik: str,
+    is_primary: bool = False,
+) -> None:
+    from equitytrace.repositories.securities import SecuritiesRepository
+
+    SecuritiesRepository(conn).upsert_many(  # type: ignore[arg-type]
+        [Security(ticker=ticker, cik=cik, is_primary=is_primary)]
+    )
 
 
 def run_backtest(db: Database, request: BacktestRequest, *, persist: bool = True) -> BacktestResult:

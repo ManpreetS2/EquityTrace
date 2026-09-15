@@ -110,8 +110,14 @@ uv run equitytrace portfolio backtest \
 ```
 
 `--schedule explicit` takes `--explicit-dates YYYY-MM-DD,YYYY-MM-DD` that must
-match stored calendar sessions (default calendar symbol SPY). Exit `2` means
-the run is research-unavailable; exit `1` is a failed run.
+match stored calendar sessions (default calendar symbol SPY). Duplicate dates
+collapse to the first occurrence; remaining dates are executed in chronological
+order. Every remaining date must sit in `[start, end]`, exist as a stored
+calendar session, and have a later effective session on or before `--end` —
+otherwise the run is unavailable rather than quietly skipping a date. The CLI
+always runs with `adjustment_mode=all`; v0.3c native backtests currently require
+that provider-adjusted research path. Exit `2` means the run is
+research-unavailable; exit `1` is a failed run.
 
 ## 8. Run the offline test suite
 

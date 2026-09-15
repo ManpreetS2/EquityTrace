@@ -50,11 +50,14 @@ Native weight-return research backtester (`0.3.2.dev0`, latest release remains
 v0.3.1). This slice is the foundation only; v0.3c is not complete until the
 skfolio adapter lands.
 
-* Latest-FY-per-issuer factor selection and exact top-N
+* Latest-FY factor selection per security/ticker and exact top-N
 * Equal weight and inverse-volatility baselines
 * Reference-calendar decision vs target-effective timing
+* Explicit schedules fail closed; monthly/quarterly use last in-window sessions
+* Same-issuer multi-security universes are unavailable (no share-class guess)
 * Weight drift, gross turnover, symmetric bps costs
 * Equity curve, compact metrics, leakage audit, DuckDB persistence
+* Native backtests currently require `adjustment_mode=all`
 * CLI: `portfolio backtest`
 
 Not in this slice: skfolio / minimum-variance optimizer.
