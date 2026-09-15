@@ -1,6 +1,6 @@
 # EquityTrace Project Map
 
-Read this file first in any Cursor / agent session. Inspect only the bounded
+Read this file first before repository work. Inspect only the bounded
 subsystem named here before searching the rest of the repository.
 
 Any PR that materially changes module locations, responsibilities, persistence
@@ -11,15 +11,15 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `0.3.1` |
-| Release target | `v0.3.1` |
+| Package | `equitytrace` `0.3.2.dev0` |
+| Release target | `v0.3.1` released; native v0.3c backtest foundation in review |
 | v0.3a | complete (v0.3.0) |
 | v0.3b | complete (v0.3.1) |
-| Next milestone | v0.3c — portfolio construction and backtesting |
+| Next milestone | remainder of v0.3c — skfolio min-variance adapter |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
-| Not present today | `src/equitytrace/portfolio/` (v0.3c, planned only) |
+| Not present today | skfolio optimizer adapter (v0.3c PR 2) |
 
 This map describes files that exist in the live tree. Planned packages are
 labeled **future** and must not be treated as implemented.
@@ -34,6 +34,7 @@ EquityTrace is a Python-first quantitative **research** platform:
 * transparent fundamental factors
 * market data (v0.3a)
 * valuation factors + market-window analytics (v0.3b)
+* native weight-return research backtests (v0.3c)
 * reproducible rankings
 
 It is **not** an AI stock picker, personalized advice engine, black-box scorer,
@@ -49,14 +50,16 @@ EquityTrace/
 ├── src/equitytrace/          # library + CLI
 │   ├── cli.py                # SEC / statements / factors CLI
 │   ├── cli_market.py         # market ingest / prices / cap / analytics CLI
+│   ├── cli_portfolio.py      # portfolio backtest CLI
 │   ├── config.py             # EQUITYTRACE_* settings (+ FILINGEDGE_* fallback)
-│   ├── database.py           # schema, init, v0.2 / v0.3a / v0.3b additive repairs
+│   ├── database.py           # schema, init, v0.2 / v0.3a / v0.3b / v0.3c additive repairs
 │   ├── models.py             # Issuer / Security / Filing / FinancialFact
 │   ├── sec/                  # HTTP client + ticker / submissions / facts / PIT
 │   ├── repositories/         # DuckDB persistence
 │   ├── financials/           # canonical statements (on demand)
 │   ├── factors/              # fiscal-period factors + ranking
-│   └── market/               # prices, shares, market cap, window analytics
+│   ├── market/               # prices, shares, market cap, window analytics
+│   └── portfolio/            # native research backtest (no skfolio yet)
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
@@ -66,8 +69,7 @@ EquityTrace/
 └── .env.example
 ```
 
-There is no frontend, no `src/equitytrace/portfolio/`, and no second market
-provider.
+There is no frontend, no skfolio adapter, and no second market provider.
 
 ## Runtime architecture
 
@@ -90,6 +92,15 @@ market symbol
   -> market.shares + market.market_cap (raw close × PIT shares)
   -> factors.engine (valuation: native market cap)
   -> market.analytics (adjusted closes; 12-1 / vol / beta / drawdown)
+
+portfolio backtest
+  -> portfolio.calendar (SPY reference sessions)
+  -> financials.list_available_annual_periods + factors.engine (latest FY only)
+  -> factors.ranking.rank_factor_results (per-name periods)
+  -> portfolio.baselines (equal weight / inverse vol)
+  -> portfolio.engine (drift, costs, equity)
+  -> repositories.portfolio persist
+  -> CLI `equitytrace portfolio backtest`
 ```
 
 ### SEC ingestion
@@ -160,8 +171,9 @@ CLI: `src/equitytrace/cli_market.py`
 | --- | --- |
 | `src/equitytrace/cli.py` | SEC/statements/factors/rank CLI; `filingedge` deprecation wrapper |
 | `src/equitytrace/cli_market.py` | Market CLI; analytics/rank-metric; non-zero on failed ingest |
+| `src/equitytrace/cli_portfolio.py` | `equitytrace portfolio backtest` |
 | `src/equitytrace/config.py` | pydantic-settings; `EQUITYTRACE_*` / legacy `FILINGEDGE_*` |
-| `src/equitytrace/database.py` | DuckDB schema + additive v0.2 / v0.3a / v0.3b repairs |
+| `src/equitytrace/database.py` | DuckDB schema + additive v0.2 / v0.3a / v0.3b / v0.3c repairs |
 | `src/equitytrace/models.py` | Core SEC domain models + `fact_id` |
 | `src/equitytrace/sec/client.py` | HTTPX, rate limit, atomic cache, archive filename safety |
 | `src/equitytrace/sec/tickers.py` | Ticker → CIK |
@@ -174,8 +186,9 @@ CLI: `src/equitytrace/cli_market.py`
 | `src/equitytrace/repositories/filings.py` | `filings` |
 | `src/equitytrace/repositories/facts.py` | `financial_facts` + `get_facts_as_of` |
 | `src/equitytrace/repositories/factors.py` | `factor_runs` / `factor_values` |
-| `src/equitytrace/repositories/market.py` | Market tables, mappings, bars, run audit |
-| `src/equitytrace/financials/` | Canonical statements |
+| `src/equitytrace/repositories/market.py` | Market tables, mappings, bars, run audit; batch bar reads |
+| `src/equitytrace/repositories/portfolio.py` | `portfolio_runs` / rebalances / transitions / equity |
+| `src/equitytrace/financials/` | Canonical statements + `list_available_annual_periods` |
 | `src/equitytrace/factors/registry.py` | Factor name → implementation |
 | `src/equitytrace/factors/ranking.py` | Deterministic cross-sectional rank |
 | `src/equitytrace/factors/engine.py` | Calculate + native market cap + optional persist |
@@ -186,7 +199,16 @@ CLI: `src/equitytrace/cli_market.py`
 | `src/equitytrace/market/market_cap.py` | Historically safe market cap |
 | `src/equitytrace/market/analytics.py` | 12-1 momentum, 1y vol/beta/drawdown from stored bars |
 | `src/equitytrace/market/availability.py` | Bar availability convention |
-| `docs/metrics.md` | Valuation and market-metric formulas |
+| `src/equitytrace/portfolio/models.py` | Request/result/status types |
+| `src/equitytrace/portfolio/calendar.py` | SPY (or other) reference sessions |
+| `src/equitytrace/portfolio/signals.py` | Latest-FY factor eligibility + exact top-N |
+| `src/equitytrace/portfolio/returns.py` | Common-date return matrices |
+| `src/equitytrace/portfolio/baselines.py` | Equal weight / inverse vol targets only |
+| `src/equitytrace/portfolio/engine.py` | Drift, costs, orchestration |
+| `src/equitytrace/portfolio/metrics.py` | Compact performance statistics |
+| `src/equitytrace/portfolio/audit.py` | Leakage audit result |
+| `docs/metrics.md` | Valuation, market-metric, and backtest formulas |
+| `docs/data-model.md` | Persistence entities, migrations, availability timestamps |
 | `.github/workflows/ci.yml` | quality (ruff/format/mypy/pytest), package-smoke, hash-seed determinism |
 
 ## Persistence map
@@ -203,7 +225,7 @@ Additive repairs (existing DBs):
 * `_ensure_factor_values_market_input`
 
 Migration labels in `schema_migrations`: `0.2.0`, `0.3.0-a`, legacy `0.3.0a`,
-`0.3.0-a1`, `0.3.0-a2`, `0.3.0-b`.
+`0.3.0-a1`, `0.3.0-a2`, `0.3.0-b`, `0.3.0-c`.
 
 | Table | Written by | Notes |
 | --- | --- | --- |
@@ -218,6 +240,10 @@ Migration labels in `schema_migrations`: `0.2.0`, `0.3.0-a`, legacy `0.3.0a`,
 | `market_symbol_mappings` | `repositories/market.py` | `valid_from` / `valid_to`; inverted intervals rejected |
 | `daily_price_bars` | `repositories/market.py` | unique `(instrument_id, provider, trading_date, adjustment_mode)` |
 | `market_data_runs` | `repositories/market.py` | ingest provenance; must be finalized |
+| `portfolio_runs` | `repositories/portfolio.py` | backtest config, warnings, audit |
+| `portfolio_rebalances` | `repositories/portfolio.py` | PK `(run_id, decision_at)`; unique effective time |
+| `portfolio_weight_transitions` | `repositories/portfolio.py` | no fills/shares/quantities |
+| `portfolio_equity` | `repositories/portfolio.py` | session marks; PK `(run_id, valuation_at)` |
 
 Caches (gitignored under `data/`):
 
@@ -254,6 +280,13 @@ These must never be violated:
 13. Beta aligns common price dates before returns so both series cover identical intervals.
 14. Market-window metrics use adjusted closes and must not claim vintage PIT.
 15. Do not scan unbounded price history for a 1y metric (~550 calendar days).
+16. Portfolio research returns use adjusted closes with
+    `provider_adjusted_history_not_vintage_pit`. Valuation/market cap stays raw.
+17. Decision evidence must have `available_at <= decision_at`. Target effective
+    is the next reference-calendar session.
+18. Weights drift between rebalances. Later unavailable rebalances charge no cost.
+19. A held name missing an interval return fails the run (`held_return_missing`).
+20. Exact top-N: valid count `< N` is unavailable; cutoff ties are not auto-included.
 
 ## Test ownership
 
@@ -282,6 +315,11 @@ These must never be violated:
 | Market final edge cases | `tests/test_market_final.py` |
 | v0.3a release-readiness regressions | `tests/test_release_audit.py` |
 | Package version alignment | `tests/test_version_consistency.py` |
+| Native portfolio backtest | `tests/test_portfolio_models.py`, `tests/test_portfolio_backtest.py` |
+| Portfolio persistence | `tests/test_portfolio_repository.py` |
+| Portfolio CLI | `tests/test_portfolio_cli.py` |
+| v0.3c migration | `tests/test_migration_v03c.py` |
+| Portfolio leakage / restatements | `tests/test_portfolio_leakage.py` |
 | Fixtures | `tests/fixtures/sec/`, `tests/helpers/` |
 
 All of these tests are offline. CI must not call live SEC or Twelve Data.
@@ -321,7 +359,9 @@ v0.3a correctness still concentrates here:
 ## Roadmap touchpoints
 
 See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
-v0.3.1. Do not start v0.3c from this map.
+v0.3.1 (latest release). Native v0.3c portfolio/backtest foundation is
+implemented on `0.3.2.dev0` and in review. The skfolio adapter is **not yet
+implemented**. v0.3c is not complete until that adapter lands.
 
 ### v0.3a
 
@@ -341,16 +381,25 @@ market CLI.
 
 ### v0.3c
 
-**Does not exist yet.** Planned package boundary (do not create in v0.3.1):
+Native research portfolio/backtest (**implemented, in review**, package
+`0.3.2.dev0`):
 
 ```text
 src/equitytrace/portfolio/
-├── optimizer.py
-├── skfolio_adapter.py
-├── constraints.py
-├── backtest.py
-└── reporting.py
+├── models.py
+├── calendar.py
+├── signals.py
+├── returns.py
+├── baselines.py
+├── engine.py
+├── metrics.py
+└── audit.py
 ```
+
+CLI: `equitytrace portfolio backtest`. Persistence: `0.3.0-c` tables.
+
+**skfolio adapter = NOT YET IMPLEMENTED.** Do not add `optimizer.py`,
+`skfolio_adapter.py`, or `constraints.py` in this slice.
 
 ### v1.0
 
@@ -377,18 +426,19 @@ are out of scope for EquityTrace itself.
 | Shares outstanding | `market/shares.py` |
 | Market cap / multi-class | `market/market_cap.py` |
 | Momentum / vol / beta / DD | `market/analytics.py` |
-| Schema / migration | `database.py` + `tests/test_migration_v02.py` / `tests/test_migration_v03b.py` |
-| CLI exit codes | `cli.py` / `cli_market.py` |
+| Portfolio backtest | `portfolio/engine.py` + `cli_portfolio.py` |
+| Schema / migration | `database.py` + `tests/test_migration_v02.py` / `tests/test_migration_v03b.py` / `tests/test_migration_v03c.py` |
+| CLI exit codes | `cli.py` / `cli_market.py` / `cli_portfolio.py` |
 | Env vars | `config.py` + `.env.example` |
 
-## Cursor low-token workflow
+## How to use this map
 
 1. Read **this map**.
 2. Read at most the bounded files in the matching row above.
 3. Read the owning test file before changing behavior.
 4. Search more broadly only if the bounded files do not contain the answer.
 5. Do not scan `tests/fixtures/` or the whole `src/` tree by default.
-6. Do not create v0.3c packages or features from this map.
+6. Do not add a skfolio optimizer from this map.
 
 ## Verification commands
 

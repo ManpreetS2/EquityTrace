@@ -44,12 +44,20 @@
 * CLI: `market analytics`, `market rank-metric`
 * Formulas: `docs/metrics.md`
 
-### v0.3c — Portfolio construction and backtesting (next)
+### v0.3c — Portfolio construction and backtesting (in review)
 
-* Portfolio construction
-* Rebalancing
-* Transaction costs
-* Backtesting metrics
+Native weight-return research backtester (`0.3.2.dev0`, latest release remains
+v0.3.1). This slice is the foundation only; v0.3c is not complete until the
+skfolio adapter lands.
+
+* Latest-FY-per-issuer factor selection and exact top-N
+* Equal weight and inverse-volatility baselines
+* Reference-calendar decision vs target-effective timing
+* Weight drift, gross turnover, symmetric bps costs
+* Equity curve, compact metrics, leakage audit, DuckDB persistence
+* CLI: `portfolio backtest`
+
+Not in this slice: skfolio / minimum-variance optimizer.
 
 ### v1.0
 
