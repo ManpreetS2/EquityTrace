@@ -5,23 +5,40 @@ on:
     branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pin uv so a later installer release cannot change lock/sync behavior under this commit.
+  UV_VERSION: "0.12.13"
+
 jobs:
   quality:
+    name: quality
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
         with:
+          version: ${{ env.UV_VERSION }}
           enable-cache: true
+          python-version: "3.12"
 
-      - name: Set up Python
-        run: uv python install 3.12
+      - name: Verify lockfile
+        run: uv lock --check
 
       - name: Install dependencies
-        run: uv sync --all-groups --no-editable
+        run: uv sync --all-groups --no-editable --locked
 
       - name: Ruff lint
         run: uv run ruff check .
@@ -37,3 +54,67 @@ jobs:
         env:
           # Tests use fixtures + mock transport; no live SEC access.
           EQUITYTRACE_SEC_EMAIL: ci@example.com
+
+  package-smoke:
+    name: package-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Build and install artifacts
+        run: uv run --no-project python scripts/package_smoke.py
+
+  determinism:
+    name: determinism (seed ${{ matrix.hashseed }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        hashseed: ["0", "1", "42"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Install dependencies
+        run: uv sync --all-groups --no-editable --locked
+
+      - name: Determinism — seed ${{ matrix.hashseed }}
+        env:
+          PYTHONHASHSEED: ${{ matrix.hashseed }}
+          EQUITYTRACE_SEC_EMAIL: ci@example.com
+        run: >
+          uv run pytest
+          tests/test_factors.py::test_ranking_direction_and_exclusions
+          tests/test_audit_v02.py::test_tied_ranking_and_all_invalid
+          tests/test_valuation_factors.py::test_valuation_ranking_deterministic
+          tests/test_market_analytics.py::test_ranking_reversed_ties_unavailable_and_beta_refusal
+          tests/test_v031_adversarial.py::test_factor_rank_deduplicates_mixed_case_and_repeats
+          tests/test_v031_adversarial.py::test_market_rank_deduplicates_input_tickers
+          tests/test_v031_adversarial.py::test_three_way_tie_competition_rank_is_deterministic

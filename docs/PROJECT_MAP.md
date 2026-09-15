@@ -187,7 +187,7 @@ CLI: `src/equitytrace/cli_market.py`
 | `src/equitytrace/market/analytics.py` | 12-1 momentum, 1y vol/beta/drawdown from stored bars |
 | `src/equitytrace/market/availability.py` | Bar availability convention |
 | `docs/metrics.md` | Valuation and market-metric formulas |
-| `.github/workflows/ci.yml` | ruff / format / mypy / pytest |
+| `.github/workflows/ci.yml` | quality (ruff/format/mypy/pytest), package-smoke, hash-seed determinism |
 
 ## Persistence map
 
@@ -281,9 +281,23 @@ These must never be violated:
 | Market hardening | `tests/test_market_harden.py` |
 | Market final edge cases | `tests/test_market_final.py` |
 | v0.3a release-readiness regressions | `tests/test_release_audit.py` |
+| Package version alignment | `tests/test_version_consistency.py` |
 | Fixtures | `tests/fixtures/sec/`, `tests/helpers/` |
 
 All of these tests are offline. CI must not call live SEC or Twelve Data.
+
+## CI ownership
+
+`.github/workflows/ci.yml` is the only GitHub Actions workflow.
+
+It checks:
+
+* lockfile integrity (`uv lock --check`) then a locked install
+* static quality: Ruff, format, Mypy, full pytest
+* focused ranking determinism under `PYTHONHASHSEED` 0 / 1 / 42
+* wheel + sdist build, artifact hygiene, clean install, installed CLI
+
+Local packaging check: `uv run --no-project python scripts/package_smoke.py`.
 
 ## Current release-risk hotspots
 
@@ -379,7 +393,7 @@ are out of scope for EquityTrace itself.
 ## Verification commands
 
 ```bash
-uv sync --all-groups --no-editable
+uv sync --all-groups --no-editable --locked
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy src
