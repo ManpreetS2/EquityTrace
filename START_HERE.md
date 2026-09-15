@@ -1,7 +1,8 @@
 # Start here
 
 Exact commands for a new developer on EquityTrace `0.3.2.dev0` (native v0.3c
-portfolio/backtest foundation in review; v0.3.1 remains the latest release).
+foundation merged; minimum-variance adapter in review; v0.3.1 remains the latest
+release).
 
 Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
@@ -49,7 +50,8 @@ editable installs under recent macOS provenance rules.
 uv run equitytrace init-db
 ```
 
-Existing v0.1 / v0.2 / v0.3.0 databases are upgraded additively by the same command.
+Existing v0.1 / v0.2 / v0.3.0 / v0.3.1 databases are upgraded additively by the
+same command.
 
 ## 4. Ingest a company (live SEC)
 

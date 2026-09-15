@@ -31,6 +31,7 @@ from equitytrace.portfolio.calendar import (
 )
 from equitytrace.portfolio.metrics import compute_metrics
 from equitytrace.portfolio.models import (
+    ISSUER_IDENTITY_UNAVAILABLE,
     SAME_ISSUER_UNAVAILABLE,
     STANDING_WARNINGS,
     WEIGHT_TOLERANCE,
@@ -47,7 +48,7 @@ from equitytrace.portfolio.models import (
     RebalanceStatus,
     WeightTransition,
 )
-from equitytrace.portfolio.returns import aligned_return_matrix, session_return
+from equitytrace.portfolio.returns import ReturnMatrix, aligned_return_matrix, session_return
 from equitytrace.portfolio.signals import (
     normalize_universe,
     resolve_latest_annual_factor,
@@ -55,13 +56,15 @@ from equitytrace.portfolio.signals import (
     selected_symbols,
     tickers_sharing_an_issuer,
 )
+from equitytrace.portfolio.skfolio_adapter import OptimizerUnavailable, minimum_variance_weights
 from equitytrace.repositories.market import MarketRepository
 from equitytrace.repositories.portfolio import PortfolioRepository
 
 
 class PortfolioUnavailable(RuntimeError):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, selection_mixed: bool = False) -> None:
         self.reason = reason
+        self.selection_mixed = selection_mixed
         super().__init__(reason)
 
 
@@ -185,6 +188,7 @@ class BacktestEngine:
                 created,
                 PortfolioRunStatus.UNAVAILABLE,
                 exc.reason,
+                mixed_periods=exc.selection_mixed,
             )
         except PortfolioFailed as exc:
             result = self._terminal(
@@ -234,6 +238,8 @@ class BacktestEngine:
         if not universe:
             raise PortfolioUnavailable("factor_universe_too_small")
         issuer_ciks = self._market.issuer_ciks_for_symbols(universe)
+        if any(ticker not in issuer_ciks for ticker in universe):
+            raise PortfolioUnavailable(ISSUER_IDENTITY_UNAVAILABLE)
         if tickers_sharing_an_issuer(issuer_ciks):
             raise PortfolioUnavailable(SAME_ISSUER_UNAVAILABLE)
 
@@ -422,7 +428,13 @@ class BacktestEngine:
         except PortfolioUnavailable as exc:
             if not first_success:
                 raise
-            return _unavailable_rebalance(decision, effective, state, exc.reason)
+            return _unavailable_rebalance(
+                decision,
+                effective,
+                state,
+                exc.reason,
+                mixed=exc.selection_mixed,
+            )
 
         mixed = target.selection.mixed_fiscal_periods
         leakage_failures.extend(
@@ -436,7 +448,10 @@ class BacktestEngine:
         )
         if not self._targets_supported(target.weights, bars_by_symbol, effective):
             if not first_success:
-                raise PortfolioUnavailable("target_support_missing")
+                raise PortfolioUnavailable(
+                    "target_support_missing",
+                    selection_mixed=mixed,
+                )
             return _unavailable_rebalance(
                 decision,
                 effective,
@@ -506,27 +521,41 @@ class BacktestEngine:
         )
         if selection is None:
             raise PortfolioUnavailable("factor_universe_too_small")
+        mixed = selection.mixed_fiscal_periods
         names = selected_symbols(selection.ranked)
         if request.baseline is PortfolioBaseline.EQUAL_WEIGHT:
             try:
                 weights = equal_weight(names)
             except BaselineUnavailable as exc:
-                raise PortfolioUnavailable(exc.reason) from exc
+                raise PortfolioUnavailable(
+                    exc.reason,
+                    selection_mixed=mixed,
+                ) from exc
             price_at: tuple[datetime, ...] = ()
             price_dates: tuple[date, ...] = ()
         else:
-            subset = {name: bars_by_symbol.get(name, []) for name in names}
-            matrix = aligned_return_matrix(
-                subset,
-                as_of=decision_at,
+            matrix = _aligned_selection_matrix(
+                names,
+                bars_by_symbol,
+                decision_at=decision_at,
                 session_date=session_date,
             )
             if matrix is None:
-                raise PortfolioUnavailable("baseline_unavailable")
+                raise PortfolioUnavailable(
+                    "baseline_unavailable",
+                    selection_mixed=mixed,
+                )
+            subset = {name: bars_by_symbol.get(name, []) for name in names}
             try:
-                weights = inverse_volatility(matrix)
-            except BaselineUnavailable as exc:
-                raise PortfolioUnavailable(exc.reason) from exc
+                if request.baseline is PortfolioBaseline.INVERSE_VOL:
+                    weights = inverse_volatility(matrix)
+                else:
+                    weights = minimum_variance_weights(matrix)
+            except (BaselineUnavailable, OptimizerUnavailable) as exc:
+                raise PortfolioUnavailable(
+                    exc.reason,
+                    selection_mixed=mixed,
+                ) from exc
             price_at, price_dates = _matrix_evidence(subset, decision_at, session_date)
         selection = selection.model_copy(
             update={
@@ -593,9 +622,11 @@ class BacktestEngine:
         status: PortfolioRunStatus,
         reason: str,
         audit: LeakageAuditResult | None = None,
+        *,
+        mixed_periods: bool = False,
     ) -> BacktestResult:
         if audit is None:
-            audit = build_audit_result(failures=[], mixed_periods=False)
+            audit = build_audit_result(failures=[], mixed_periods=mixed_periods)
         return BacktestResult(
             run_id=run_id,
             status=status,
@@ -672,6 +703,21 @@ def _bar_on_session(
     if len(matches) != 1:
         return None
     return matches[0]
+
+
+def _aligned_selection_matrix(
+    names: list[str],
+    bars_by_symbol: dict[str, list[DailyPriceBar]],
+    *,
+    decision_at: datetime,
+    session_date: date,
+) -> ReturnMatrix | None:
+    subset = {name: bars_by_symbol.get(name, []) for name in names}
+    return aligned_return_matrix(
+        subset,
+        as_of=decision_at,
+        session_date=session_date,
+    )
 
 
 def _matrix_evidence(

@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
 
 from equitytrace.database import Database
 from equitytrace.financials.service import FinancialsService
 from equitytrace.market.models import PriceAdjustmentMode
-from equitytrace.portfolio.baselines import equal_weight, inverse_volatility
+from equitytrace.portfolio.baselines import BaselineUnavailable, equal_weight, inverse_volatility
 from equitytrace.portfolio.calendar import (
     CalendarError,
     CalendarSession,
@@ -24,14 +25,17 @@ from equitytrace.portfolio.engine import (
     gross_turnover,
 )
 from equitytrace.portfolio.models import (
+    ISSUER_IDENTITY_UNAVAILABLE,
     MIXED_PERIODS_WARNING,
     SAME_ISSUER_UNAVAILABLE,
+    PortfolioBaseline,
     PortfolioRunStatus,
     PortfolioSchedule,
     RebalanceStatus,
 )
 from equitytrace.portfolio.returns import ReturnMatrix, aligned_return_matrix
 from equitytrace.portfolio.signals import normalize_universe, tickers_sharing_an_issuer
+from equitytrace.portfolio.skfolio_adapter import OptimizerUnavailable
 from equitytrace.repositories.portfolio import PortfolioRepository
 from helpers.financial_fixtures import make_fact
 from helpers.portfolio_fixtures import (
@@ -42,6 +46,7 @@ from helpers.portfolio_fixtures import (
     explicit_request,
     run_backtest,
     seed_issuer,
+    seed_min_variance_two_name_path,
     weekdays,
 )
 
@@ -1064,3 +1069,346 @@ def test_benchmark_gap_does_not_mutate_weights(db: Database) -> None:
     assert result.status is PortfolioRunStatus.SUCCESS
     assert "benchmark_unavailable" in result.warnings
     assert any(point.benchmark_nav is None for point in result.equity)
+
+
+def _target_weights(rebalance) -> dict[str, float]:  # type: ignore[no-untyped-def]
+    return {
+        row.symbol: row.target_weight_after
+        for row in rebalance.transitions
+        if row.target_weight_after > 0
+    }
+
+
+def test_min_variance_first_rebalance_success(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=start,
+            end=end,
+            decisions=decisions,
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+        ),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    first = result.rebalances[0]
+    assert first.status is RebalanceStatus.SUCCESS
+    weights = _target_weights(first)
+    assert set(weights) == {"AAA", "BBB"}
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_min_variance_later_rebalance_success(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=start,
+            end=end,
+            decisions=decisions,
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+        ),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    assert len(result.rebalances) == 2
+    assert result.rebalances[1].status is RebalanceStatus.SUCCESS
+
+
+def test_min_variance_first_optimizer_failure_unavailable(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    with patch(
+        "equitytrace.portfolio.engine.minimum_variance_weights",
+        side_effect=OptimizerUnavailable("optimizer_fit_failed"),
+    ):
+        result = run_backtest(
+            db,
+            explicit_request(
+                ("AAA", "BBB"),
+                start=start,
+                end=end,
+                decisions=decisions[:1],
+                top_n=2,
+                baseline=PortfolioBaseline.MIN_VARIANCE,
+            ),
+        )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "optimizer_fit_failed"
+    assert result.rebalances == ()
+
+
+def test_min_variance_later_optimizer_failure_holds_drift(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    calls = {"count": 0}
+
+    def _fail_second(*args, **kwargs):  # type: ignore[no-untyped-def]
+        from equitytrace.portfolio.skfolio_adapter import minimum_variance_weights as real
+
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return real(*args, **kwargs)
+        raise OptimizerUnavailable("optimizer_fit_failed")
+
+    with patch("equitytrace.portfolio.engine.minimum_variance_weights", side_effect=_fail_second):
+        result = run_backtest(
+            db,
+            explicit_request(
+                ("AAA", "BBB"),
+                start=start,
+                end=end,
+                decisions=decisions,
+                top_n=2,
+                baseline=PortfolioBaseline.MIN_VARIANCE,
+            ),
+        )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    later = result.rebalances[1]
+    assert later.status is RebalanceStatus.UNAVAILABLE
+    assert later.reason == "optimizer_fit_failed"
+    assert later.gross_turnover == 0.0
+    assert later.cost_amount == 0.0
+    assert later.transitions == ()
+
+
+def test_min_variance_targets_invariant_to_cost_bps(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    low = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=start,
+            end=end,
+            decisions=decisions[:1],
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+            cost_bps=0.0,
+        ),
+    )
+    high = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=start,
+            end=end,
+            decisions=decisions[:1],
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+            cost_bps=50.0,
+        ),
+    )
+    assert low.status is PortfolioRunStatus.SUCCESS
+    assert high.status is PortfolioRunStatus.SUCCESS
+    assert _target_weights(low.rebalances[0]) == pytest.approx(_target_weights(high.rebalances[0]))
+    assert low.rebalances[0].post_cost_nav != pytest.approx(high.rebalances[0].post_cost_nav)
+
+
+def test_min_variance_short_history_first_rebalance_unavailable(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=D0,
+            end=D3,
+            decisions=(D0,),
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+        ),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "baseline_unavailable"
+
+
+def test_unresolved_issuer_identity_is_unavailable(db: Database) -> None:
+    days = [D0, D1, D2, D3]
+    with db.session() as conn:
+        add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        add_adjusted_bars(conn, "ZZZ", [(day, 100.0) for day in days])
+    result = run_backtest(
+        db,
+        explicit_request(("ZZZ",), start=D0, end=D3, decisions=(D0,), top_n=1),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == ISSUER_IDENTITY_UNAVAILABLE
+    assert result.rebalances == ()
+    assert result.request.tickers == ("ZZZ",)
+
+
+def test_calendar_without_issuer_cik_does_not_block_universe(db: Database) -> None:
+    _seed_two_name_path(db)
+    with db.session() as conn:
+        conn.execute(
+            "UPDATE market_instruments SET issuer_cik = NULL WHERE canonical_symbol = 'SPY'"
+        )
+    result = run_backtest(
+        db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+
+
+def test_min_variance_deterministic_under_hash_seed(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    forward = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=start,
+            end=end,
+            decisions=decisions[:1],
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+        ),
+    )
+    reverse = run_backtest(
+        db,
+        explicit_request(
+            ("BBB", "AAA"),
+            start=start,
+            end=end,
+            decisions=decisions[:1],
+            top_n=2,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+        ),
+    )
+    assert forward.status is PortfolioRunStatus.SUCCESS
+    assert reverse.status is PortfolioRunStatus.SUCCESS
+    assert _target_weights(forward.rebalances[0]) == pytest.approx(
+        _target_weights(reverse.rebalances[0]),
+        abs=1e-8,
+    )
+
+
+def test_min_variance_top_n_one_is_fully_invested(db: Database) -> None:
+    _, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(
+            ("AAA", "BBB"),
+            start=start,
+            end=end,
+            decisions=decisions[:1],
+            top_n=1,
+            baseline=PortfolioBaseline.MIN_VARIANCE,
+        ),
+    )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    weights = _target_weights(result.rebalances[0])
+    assert weights["AAA"] == pytest.approx(1.0)
+    assert set(weights) == {"AAA"}
+
+
+def _seed_mixed_min_variance_path(db: Database) -> tuple[date, date, tuple[date, ...]]:
+    days, (start, end, decisions) = seed_min_variance_two_name_path(db)
+    fy_late = datetime(2021, 6, 1, tzinfo=UTC)
+    with db.session() as conn:
+        seed_issuer(
+            conn,
+            ticker="CCC",
+            cik="0001000003",
+            facts=annual_roa_facts(
+                cik="0001000003",
+                fiscal_year=2024,
+                net_income=30.0,
+                assets=100.0,
+                prior_assets=100.0,
+                available_at=fy_late,
+                accession="ccc-2024",
+            ),
+        )
+        window = [day for day in days if day <= end]
+        from helpers.portfolio_fixtures import varying_two_asset_closes
+
+        ccc_points, _ = varying_two_asset_closes(window)
+        # Distinct path so optimizer input stays non-degenerate with AAA/BBB.
+        ccc_points = [(day, price * 1.1) for day, price in ccc_points]
+        add_adjusted_bars(conn, "CCC", ccc_points)
+    return start, end, decisions
+
+
+def test_mixed_survives_first_min_variance_optimizer_failure(db: Database) -> None:
+    start, end, decisions = _seed_mixed_min_variance_path(db)
+    with patch(
+        "equitytrace.portfolio.engine.minimum_variance_weights",
+        side_effect=OptimizerUnavailable("optimizer_fit_failed"),
+    ):
+        result = run_backtest(
+            db,
+            explicit_request(
+                ("AAA", "BBB", "CCC"),
+                start=start,
+                end=end,
+                decisions=decisions[:1],
+                top_n=3,
+                baseline=PortfolioBaseline.MIN_VARIANCE,
+            ),
+        )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "optimizer_fit_failed"
+    assert MIXED_PERIODS_WARNING in result.warnings
+
+
+def test_mixed_survives_later_min_variance_optimizer_failure(db: Database) -> None:
+    start, end, decisions = _seed_mixed_min_variance_path(db)
+    calls = {"count": 0}
+
+    def _fail_second(*args, **kwargs):  # type: ignore[no-untyped-def]
+        from equitytrace.portfolio.skfolio_adapter import minimum_variance_weights as real
+
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return real(*args, **kwargs)
+        raise OptimizerUnavailable("optimizer_fit_failed")
+
+    with patch("equitytrace.portfolio.engine.minimum_variance_weights", side_effect=_fail_second):
+        result = run_backtest(
+            db,
+            explicit_request(
+                ("AAA", "BBB", "CCC"),
+                start=start,
+                end=end,
+                decisions=decisions,
+                top_n=3,
+                baseline=PortfolioBaseline.MIN_VARIANCE,
+            ),
+        )
+    assert result.status is PortfolioRunStatus.SUCCESS
+    later = next(row for row in result.rebalances if row.status is RebalanceStatus.UNAVAILABLE)
+    assert later.reason == "optimizer_fit_failed"
+    assert MIXED_PERIODS_WARNING in result.warnings
+
+
+def test_mixed_survives_first_inverse_vol_baseline_failure(db: Database) -> None:
+    start, end, decisions = _seed_mixed_min_variance_path(db)
+    with patch(
+        "equitytrace.portfolio.engine.inverse_volatility",
+        side_effect=BaselineUnavailable("baseline_unavailable"),
+    ):
+        result = run_backtest(
+            db,
+            explicit_request(
+                ("AAA", "BBB", "CCC"),
+                start=start,
+                end=end,
+                decisions=decisions[:1],
+                top_n=3,
+                baseline=PortfolioBaseline.INVERSE_VOL,
+            ),
+        )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "baseline_unavailable"
+    assert MIXED_PERIODS_WARNING in result.warnings
+
+
+def test_mixed_not_emitted_when_selection_never_formed(db: Database) -> None:
+    _seed_two_name_path(db)
+    result = run_backtest(
+        db,
+        explicit_request(("AAA",), start=D0, end=D3, decisions=(D0,), top_n=2),
+    )
+    assert result.status is PortfolioRunStatus.UNAVAILABLE
+    assert result.failure_reason == "factor_universe_too_small"
+    assert MIXED_PERIODS_WARNING not in result.warnings
