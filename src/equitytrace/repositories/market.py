@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -179,6 +180,57 @@ class MarketRepository:
             [canonical_symbol.strip().upper()],
         ).fetchone()
         return _row_to_instrument(row) if row else None
+
+    def get_instruments_by_symbols(
+        self,
+        symbols: Sequence[str],
+    ) -> dict[str, MarketInstrument]:
+        """Load instruments for canonical symbols in one query."""
+        cleaned = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+        if not cleaned:
+            return {}
+        placeholders = ", ".join("?" * len(cleaned))
+        rows = self._conn.execute(
+            f"""
+            SELECT instrument_id, canonical_symbol, asset_type, security_ticker, issuer_cik,
+                   exchange, mic_code, currency, exchange_timezone, market_metadata_confirmed,
+                   active, created_at, updated_at
+            FROM market_instruments
+            WHERE canonical_symbol IN ({placeholders})
+            """,
+            cleaned,
+        ).fetchall()
+        instruments = [_row_to_instrument(row) for row in rows]
+        return {instrument.canonical_symbol: instrument for instrument in instruments}
+
+    def issuer_ciks_for_symbols(self, symbols: Sequence[str]) -> dict[str, str]:
+        """Map research symbols to issuer CIK from instruments, else securities."""
+        cleaned = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+        if not cleaned:
+            return {}
+        instruments = self.get_instruments_by_symbols(cleaned)
+        out: dict[str, str] = {}
+        missing: list[str] = []
+        for symbol in cleaned:
+            instrument = instruments.get(symbol)
+            cik = instrument.issuer_cik if instrument is not None else None
+            if cik:
+                out[symbol] = cik
+            else:
+                missing.append(symbol)
+        for symbol in missing:
+            row = self._conn.execute(
+                """
+                SELECT cik FROM securities
+                WHERE ticker = ?
+                ORDER BY is_primary DESC, cik
+                LIMIT 1
+                """,
+                [symbol],
+            ).fetchone()
+            if row is not None and row[0] is not None:
+                out[symbol] = str(row[0])
+        return out
 
     def get_instrument(self, instrument_id: str) -> MarketInstrument | None:
         row = self._conn.execute(
@@ -598,6 +650,48 @@ class MarketRepository:
             sql += " LIMIT ?"
             params.append(limit)
         rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_bar(row) for row in rows]
+
+    def get_price_bars_for_instruments(
+        self,
+        instrument_ids: Sequence[str],
+        *,
+        start_date: date,
+        end_date: date,
+        adjustment_mode: PriceAdjustmentMode,
+        provider: MarketDataProviderName,
+    ) -> list[DailyPriceBar]:
+        """Load a date window of bars for many instruments in one query.
+
+        Point-in-time ``available_at`` filtering stays with the caller so each
+        decision can apply its own knowledge time.
+        """
+        ids = [item.strip() for item in instrument_ids if item.strip()]
+        if not ids:
+            return []
+        placeholders = ", ".join("?" * len(ids))
+        params: list[object] = [
+            *ids,
+            adjustment_mode.value,
+            provider.value,
+            start_date,
+            end_date,
+        ]
+        rows = self._conn.execute(
+            f"""
+            SELECT instrument_id, provider, trading_date, adjustment_mode,
+                   open, high, low, close, volume, currency, exchange_timezone,
+                   available_at, fetched_at, source_metadata_json
+            FROM daily_price_bars
+            WHERE instrument_id IN ({placeholders})
+              AND adjustment_mode = ?
+              AND provider = ?
+              AND trading_date >= ?
+              AND trading_date <= ?
+            ORDER BY instrument_id, trading_date ASC
+            """,
+            params,
+        ).fetchall()
         return [_row_to_bar(row) for row in rows]
 
     def get_latest_price_on_or_before(

@@ -1,7 +1,7 @@
 # Research metrics
 
-Formulas and point-in-time rules for EquityTrace v0.3.1 valuation factors and
-market-window analytics. Ambiguous inputs return `UNAVAILABLE` rather than a
+Formulas and point-in-time rules for EquityTrace v0.3.2.dev0 valuation factors,
+market-window analytics, and native research backtests. Ambiguous inputs return `UNAVAILABLE` rather than a
 guess.
 
 Provider-adjusted history is not a vendor-vintage PIT archive. Corporate-action
@@ -114,3 +114,72 @@ Shorter samples are unavailable rather than relabeled as one-year metrics.
 * Result is `<= 0` (`-0.10` is a 10% drawdown)
 * Ranking: higher is better (`-0.10` beats `-0.50`)
 * Unavailable: fewer than 253 closes; non-positive close
+
+## Portfolio backtest (v0.3c)
+
+Research weight-return model. Not an execution simulator. No fill prices or
+share quantities. v0.3c native backtests currently require
+`adjustment_mode=all` (provider-adjusted closes) for the research return path.
+Raw close remains valuation / market-cap only.
+
+Standing warnings: `provider_adjusted_history_not_vintage_pit`,
+`survivorship_bias_possible`. Mixed issuer fiscal years add
+`mixed_fiscal_periods`.
+
+### Timing
+
+* Decision session T0 uses the stored reference-calendar bar `available_at`.
+* Target becomes effective at the next reference-calendar session T1.
+* T0→T1 the old weights earn the interval return; T1 is marked, then the
+  transition is applied.
+
+### Latest FY signal
+
+Each security/ticker uses only its latest annual period known at `decision_at`.
+If that factor is unavailable, the name is excluded. Older fiscal years are not
+substituted. Fundamentals are issuer-level; v0.3c does not yet choose among
+multiple securities/share classes for one issuer. An explicit universe that
+resolves more than one ticker to the same CIK is unavailable
+(`multiple_securities_same_issuer_unsupported`) rather than guessed.
+
+### Schedules
+
+* `explicit` — first-seen unique dates, then chronological. Every remaining
+  date must be within `[start_date, end_date]`, a stored reference-calendar
+  session, and have a strictly later stored session on or before `end_date`.
+  Otherwise the run is unavailable (`explicit_date_out_of_range`,
+  `calendar_missing`, or `effective_session_out_of_range`). Dates are never
+  silently dropped.
+* `monthly` — last stored in-window reference session of each represented month.
+* `quarterly` — last stored in-window session in March/June/September/December.
+* Monthly/quarterly decisions whose target-effective session is missing or
+  after `end_date` are not executable.
+
+### Turnover
+
+`gross_turnover = Σ_assets |target − current_drifted_weight|`
+
+Cash is not a turnover leg. Missing names count as zero weight.
+
+### Cost
+
+`cost = pre_cost_nav × gross_turnover × (cost_bps / 10_000)`
+
+`post_cost_nav = pre_cost_nav − cost`
+
+Later unavailable rebalances: turnover 0, cost 0, drifted state continues.
+
+### Inverse volatility
+
+Intersect common **price dates** first, then 252 close-to-close returns on those
+dates. Sample standard deviation. No forward fill.
+
+### Performance
+
+* total return = `final_nav / initial_nav − 1`
+* annualized return = `(final_nav / initial_nav) ** (252 / N) − 1` where `N` is
+  the count of reference-calendar session returns in the requested window,
+  including initial cash-only intervals before the first investment
+* volatility = sample stdev of session returns × `sqrt(252)`
+* Sharpe (rf=0) = mean(session returns) / sample stdev × `sqrt(252)`
+* max drawdown = `min(nav_event / running_peak − 1)` including pre-transition marks

@@ -9,14 +9,12 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **0.3.1** is the v0.3b release: native PIT valuation (FCF yield, P/E,
-P/S, P/B) plus stored-price 12-1 momentum, one-year volatility, beta, and max
-drawdown. It builds on the v0.3.0 market-data foundation and the v0.1 EDGAR
-ingestion pipeline (historically published as FilingEdge): resolve tickers to
-CIKs, retrieve submissions and XBRL Company Facts, normalize them into
-structured records, store them in DuckDB, assemble comparable financial
-statements, calculate point-in-time-safe factors, and ingest historical daily
-market data with historically safe market-cap calculations.
+Version **0.3.1** is the latest release (v0.3b). The `0.3.2.dev0` line adds a
+native **weight-return research backtester**: latest-FY factor selection per
+security/ticker, exact top-N, equal-weight / inverse-vol baselines, drifting
+weights, and transparent costs. It is not an execution simulator and does not
+invent fill prices or share quantities. v0.3c does not choose among multiple
+securities/share classes for one issuer.
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
@@ -68,11 +66,12 @@ Ticker -> SEC CIK
       -> submissions (+ archives)
       -> company facts (XBRL)
       -> normalize (Issuer / Security / Filing / FinancialFact)
-      -> DuckDB (atomic upsert)
+      -> DuckDB persistence
       -> canonical statement snapshot (as_of)
       -> fundamental factors / ranking
       -> market data (raw + adjusted bars, PIT market cap)
       -> market-window analytics (momentum / vol / beta / drawdown)
+      -> native research backtest (weight-return)
       -> CLI
 ```
 
@@ -298,7 +297,10 @@ SEC-only commands continue to work without a market-data API key.
 - P/E and P/S are FY only; quarterly TTM is not assembled
 - Provider-adjusted history is not a vendor-vintage PIT archive
 - Beta has no default ranking direction
-- No portfolios, rebalancing, or backtests (v0.3c)
+- Native backtests are research weight-return paths, not execution simulations
+- v0.3c native backtests currently require `adjustment_mode=all`; raw close remains valuation-only
+- v0.3c does not yet choose among multiple securities/share classes for one issuer; ambiguous same-issuer universes are unavailable
+- No skfolio optimizer yet (next v0.3c slice)
 - No frontend / research UI
 - Canonical statements are computed on demand (not fully materialized)
 - Concept mappings cover common us-gaap tags; unusual issuer tags may be missing
@@ -326,7 +328,7 @@ See [docs/roadmap.md](docs/roadmap.md).
 
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
 - **v0.3.1 / v0.3b** — Valuation, momentum, and risk (**completed**)
-- **v0.3c** — Portfolio construction and backtesting (**next**)
+- **v0.3c** — Native portfolio/backtest foundation (**in review**; skfolio adapter later)
 - **v1.0** — Strategy builder and research interface
 
 ## License

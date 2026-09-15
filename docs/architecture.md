@@ -1,4 +1,4 @@
-# Architecture (v0.3.1)
+# Architecture (v0.3.2.dev0)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
 normalization, persistence, canonical statements, factors, market data, and CLI.
@@ -14,7 +14,7 @@ Financial statements
 Fundamental factors
 Market data
 Market analytics
-Portfolio/backtest — future (v0.3c)
+Portfolio/backtest — native weight-return research (v0.3c)
 Presentation/UI — future (v1.0)
 ```
 
@@ -44,7 +44,7 @@ Presentation/UI — future (v1.0)
 
 6. **Persistence**
    - `database.py` — DuckDB path + idempotent / additive schema
-   - repositories for issuers, securities, filings, facts, ingestion, factors
+   - repositories for issuers, securities, filings, facts, ingestion, factors, portfolio
    - company snapshot writes with idempotent re-ingest semantics
 
 7. **Canonical financials (`equitytrace.financials`)**
@@ -64,8 +64,9 @@ Presentation/UI — future (v1.0)
 ## Point-in-time design
 
 ```text
-acceptanceDateTime (Eastern) -> UTC  => available_at
-if missing: end of filing_date (Eastern) -> UTC => available_at
+acceptanceDateTime with Z / explicit offset  -> absolute instant (UTC) => available_at
+naive acceptanceDateTime                     -> U.S. Eastern wall time -> UTC => available_at
+missing or date-only acceptance              -> filing-date end-of-day Eastern -> UTC => available_at
 ```
 
 Queries and snapshots:
@@ -136,5 +137,20 @@ transports or injected providers. No live SEC or Twelve Data calls in CI.
    - Beta aligns common price dates before returns
    - Ranking for metrics with a default direction; beta ranking is refused
 
-Future (not in this tree): portfolio construction / backtesting (v0.3c) and a
+11. **Portfolio backtest (`equitytrace.portfolio`)**
+   - Weight/notional research model (no fills, shares, or execution)
+   - Decision after session `available_at`; target effective next calendar session
+   - Latest FY per security/ticker (no silent older-year fallback)
+   - Exact top-N, equal weight, inverse vol on common-date 252-return matrices
+   - Drift, gross turnover, symmetric bps costs, leakage audit
+   - Native v0.3c backtests require `adjustment_mode=all` (provider-adjusted
+     research closes). Raw close remains valuation / market-cap only.
+   - Multiple universe securities that share one issuer CIK are unavailable
+     (`multiple_securities_same_issuer_unsupported`); v0.3c does not choose a
+     share class.
+   - Explicit schedules fail closed: every unique requested date must form an
+     in-window (decision, target-effective) pair.
+   - skfolio adapter is not implemented yet
+
+Future (not in this tree): skfolio min-variance (remainder of v0.3c) and a
 research UI (v1.0).

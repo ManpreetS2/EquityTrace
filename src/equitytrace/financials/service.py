@@ -181,6 +181,37 @@ class FinancialsService:
             missing=missing,
         )
 
+    def list_available_annual_periods(
+        self,
+        ticker: str,
+        as_of: datetime,
+    ) -> list[FinancialPeriod]:
+        """Return FY periods known as of ``as_of``, newest fiscal year first.
+
+        Only facts with ``available_at <= as_of`` and ``fiscal_period = FY``
+        contribute. Quarters are never annualized into a year.
+        """
+        symbol = ticker.strip().upper()
+        as_of_utc = _normalize_as_of(as_of)
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT f.fiscal_year
+            FROM financial_facts f
+            INNER JOIN securities s ON s.cik = f.cik
+            WHERE s.ticker = ?
+              AND f.available_at <= ?
+              AND f.fiscal_year IS NOT NULL
+              AND upper(f.fiscal_period) = 'FY'
+            ORDER BY f.fiscal_year DESC
+            """,
+            [symbol, as_of_utc],
+        ).fetchall()
+        return [
+            FinancialPeriod(fiscal_year=int(row[0]), fiscal_period="FY", kind="annual")
+            for row in rows
+            if row[0] is not None
+        ]
+
     def _load_candidate_facts(self, ticker: str, as_of: datetime) -> list[FinancialFact]:
         """Load PIT facts limited to mapped XBRL concepts."""
         facts = self._facts.get_facts_as_of(ticker, as_of)

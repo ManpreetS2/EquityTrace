@@ -1,7 +1,7 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace v0.3.1 (v0.3b valuation,
-momentum, and risk).
+Exact commands for a new developer on EquityTrace `0.3.2.dev0` (native v0.3c
+portfolio/backtest foundation in review; v0.3.1 remains the latest release).
 
 Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
@@ -95,7 +95,31 @@ uv run equitytrace market rank-metric momentum_12_1 AAPL MSFT --as-of 2024-12-31
 
 SEC-only workflows do not need a market-data key. Beta ranking is refused.
 
-## 7. Run the offline test suite
+## 7. Research backtest (offline fixtures or a local DuckDB)
+
+```bash
+uv run equitytrace portfolio backtest \
+  --tickers AAPL,MSFT,GOOGL \
+  --factor roa \
+  --top-n 2 \
+  --baseline equal-weight \
+  --start 2020-01-01 \
+  --end 2024-12-31 \
+  --schedule monthly \
+  --cost-bps 10
+```
+
+`--schedule explicit` takes `--explicit-dates YYYY-MM-DD,YYYY-MM-DD` that must
+match stored calendar sessions (default calendar symbol SPY). Duplicate dates
+collapse to the first occurrence; remaining dates are executed in chronological
+order. Every remaining date must sit in `[start, end]`, exist as a stored
+calendar session, and have a later effective session on or before `--end` —
+otherwise the run is unavailable rather than quietly skipping a date. The CLI
+always runs with `adjustment_mode=all`; v0.3c native backtests currently require
+that provider-adjusted research path. Exit `2` means the run is
+research-unavailable; exit `1` is a failed run.
+
+## 8. Run the offline test suite
 
 ```bash
 uv run pytest

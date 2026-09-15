@@ -240,6 +240,79 @@ CREATE INDEX IF NOT EXISTS idx_market_mappings_provider_symbol
 CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_price_bars(trading_date);
 CREATE INDEX IF NOT EXISTS idx_daily_bars_available_at ON daily_price_bars(available_at);
 CREATE INDEX IF NOT EXISTS idx_market_data_runs_instrument ON market_data_runs(instrument_id);
+
+-- v0.3c additive tables (idempotent; safe for existing v0.3.1 databases)
+CREATE TABLE IF NOT EXISTS portfolio_runs (
+    run_id VARCHAR PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL,
+    completed_at TIMESTAMPTZ,
+    status VARCHAR NOT NULL,
+    failure_reason VARCHAR,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    schedule VARCHAR NOT NULL,
+    calendar_symbol VARCHAR NOT NULL,
+    benchmark_symbol VARCHAR,
+    factor_name VARCHAR NOT NULL,
+    top_n INTEGER NOT NULL,
+    baseline VARCHAR NOT NULL,
+    cost_bps DOUBLE NOT NULL,
+    initial_nav DOUBLE NOT NULL,
+    provider VARCHAR NOT NULL,
+    adjustment_mode VARCHAR NOT NULL,
+    warnings_json VARCHAR,
+    audit_json VARCHAR,
+    package_version VARCHAR NOT NULL,
+    request_json VARCHAR,
+    final_nav DOUBLE,
+    metrics_json VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_rebalances (
+    run_id VARCHAR NOT NULL,
+    decision_at TIMESTAMPTZ NOT NULL,
+    target_effective_at TIMESTAMPTZ NOT NULL,
+    status VARCHAR NOT NULL,
+    reason VARCHAR,
+    pre_cost_nav DOUBLE NOT NULL,
+    post_cost_nav DOUBLE NOT NULL,
+    gross_turnover DOUBLE NOT NULL,
+    cost_amount DOUBLE NOT NULL,
+    PRIMARY KEY (run_id, decision_at),
+    UNIQUE (run_id, target_effective_at)
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_weight_transitions (
+    run_id VARCHAR NOT NULL,
+    decision_at TIMESTAMPTZ NOT NULL,
+    target_effective_at TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR NOT NULL,
+    instrument_id VARCHAR NOT NULL,
+    current_weight_before DOUBLE NOT NULL,
+    target_weight_after DOUBLE NOT NULL,
+    delta_weight DOUBLE NOT NULL,
+    gross_notional DOUBLE NOT NULL,
+    allocated_cost DOUBLE NOT NULL,
+    signal_value DOUBLE,
+    signal_rank INTEGER,
+    signal_period VARCHAR,
+    signal_provenance_json VARCHAR,
+    PRIMARY KEY (run_id, decision_at, symbol)
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_equity (
+    run_id VARCHAR NOT NULL,
+    valuation_at TIMESTAMPTZ NOT NULL,
+    nav DOUBLE NOT NULL,
+    cash_weight DOUBLE NOT NULL,
+    drawdown DOUBLE NOT NULL,
+    benchmark_nav DOUBLE,
+    PRIMARY KEY (run_id, valuation_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_rebalances_run ON portfolio_rebalances(run_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_transitions_run ON portfolio_weight_transitions(run_id);
+CREATE INDEX IF NOT EXISTS idx_portfolio_equity_run ON portfolio_equity(run_id);
 """
 
 
@@ -339,6 +412,17 @@ class Database:
                 [
                     "0.3.0-b",
                     "Nullable market_input_json on factor_values for valuation provenance",
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "0.3.0-c",
+                    "Native portfolio backtest runs, rebalances, transitions, equity",
                 ],
             )
         logger.info("Initialized DuckDB schema at %s", self.path)

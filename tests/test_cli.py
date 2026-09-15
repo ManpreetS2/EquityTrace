@@ -63,7 +63,7 @@ def test_cli_version() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert "EquityTrace" in result.output
-    assert "0.3.1" in result.output
+    assert "0.3.2.dev0" in result.output
 
 
 def test_cli_help_branding() -> None:
