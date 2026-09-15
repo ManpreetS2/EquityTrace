@@ -122,3 +122,4 @@ jobs:
           tests/test_portfolio_backtest.py::test_cash_drift_without_rebalance
           tests/test_portfolio_backtest.py::test_universe_order_and_mixed_case_duplicates_are_deterministic
           tests/test_portfolio_backtest.py::test_top_n_cutoff_does_not_include_extra_ties
+          tests/test_portfolio_backtest.py::test_min_variance_deterministic_under_hash_seed
