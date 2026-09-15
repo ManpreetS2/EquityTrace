@@ -1,7 +1,22 @@
-# Architecture (v0.3a)
+# Architecture (v0.3.1)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
-normalization, persistence, canonical statements, factors, and CLI.
+normalization, persistence, canonical statements, factors, market data, and CLI.
+
+Domain objects stay separate:
+
+```text
+Issuer
+Security
+Filing
+FinancialFact
+Financial statements
+Fundamental factors
+Market data
+Market analytics
+Portfolio/backtest — future (v0.3c)
+Presentation/UI — future (v1.0)
+```
 
 ## Layers
 
@@ -42,6 +57,7 @@ normalization, persistence, canonical statements, factors, and CLI.
 8. **Factors (`equitytrace.factors`)**
    - protocol-style factor classes
    - point-in-time-safe calculations from snapshots
+   - valuation multiples use stored PIT market cap (raw close × shares)
    - cross-sectional ranking with explicit direction
    - optional materialization into `factor_runs` / `factor_values`
 
@@ -113,3 +129,12 @@ transports or injected providers. No live SEC or Twelve Data calls in CI.
    - Conservative `available_at` = exchange-local 16:15 → UTC (unknown timezones rejected)
    - Shares outstanding selected from stored SEC facts with point-in-time filters
    - Market cap = raw close × shares; multi-class issuers are unavailable by default
+
+10. **Market analytics (`equitytrace.market.analytics`)**
+   - Window metrics from stored adjusted bars, not fiscal-period factors
+   - 12-1 momentum, 1y volatility, beta, and max drawdown
+   - Beta aligns common price dates before returns
+   - Ranking for metrics with a default direction; beta ranking is refused
+
+Future (not in this tree): portfolio construction / backtesting (v0.3c) and a
+research UI (v1.0).

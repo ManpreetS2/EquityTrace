@@ -9,14 +9,14 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **0.3.1.dev0** is unreleased v0.3b work on top of the v0.3.0 market-data
-foundation: native PIT valuation factors plus stored-price momentum and risk
-metrics. It still builds on the v0.1 EDGAR ingestion pipeline (historically
-published as FilingEdge): resolve tickers to CIKs, retrieve submissions and XBRL
-Company Facts, normalize them into structured records, store them in DuckDB,
-assemble comparable financial statements, calculate point-in-time-safe factors,
-and ingest historical daily market data with historically safe market-cap
-calculations.
+Version **0.3.1** is the v0.3b release: native PIT valuation (FCF yield, P/E,
+P/S, P/B) plus stored-price 12-1 momentum, one-year volatility, beta, and max
+drawdown. It builds on the v0.3.0 market-data foundation and the v0.1 EDGAR
+ingestion pipeline (historically published as FilingEdge): resolve tickers to
+CIKs, retrieve submissions and XBRL Company Facts, normalize them into
+structured records, store them in DuckDB, assemble comparable financial
+statements, calculate point-in-time-safe factors, and ingest historical daily
+market data with historically safe market-cap calculations.
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
@@ -71,6 +71,8 @@ Ticker -> SEC CIK
       -> DuckDB (atomic upsert)
       -> canonical statement snapshot (as_of)
       -> fundamental factors / ranking
+      -> market data (raw + adjusted bars, PIT market cap)
+      -> market-window analytics (momentum / vol / beta / drawdown)
       -> CLI
 ```
 
@@ -79,6 +81,8 @@ Key separations:
 - **Issuer** (CIK / legal entity) ≠ **Security** (ticker / share class)
 - Report period dates ≠ public availability dates
 - Raw XBRL concepts ≠ canonical statement concepts
+- Fiscal-period factors ≠ market-window analytics
+- Raw close (valuation / market cap) ≠ provider-adjusted close (momentum / risk)
 - Live SEC HTTP client is injectable; tests use offline fixtures
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation,
@@ -251,15 +255,16 @@ uv run mypy src
 uv run pytest
 ```
 
-The offline suite currently contains **268** tests. All SEC and market-provider tests
-run against fixtures or mocks under `tests/fixtures/` — no live SEC or Twelve
-Data network access is required.
+The offline test suite runs entirely against fixtures and mocks; no live SEC or
+Twelve Data access is required.
 
-## Market data (v0.3a)
+## Market data and analytics
 
 EquityTrace stores **raw** (`adjustment_mode=none`) and **provider-adjusted**
 (`adjustment_mode=all`) daily OHLCV bars as separate rows. Market capitalization
-always uses **raw close × point-in-time SEC shares outstanding**.
+always uses **raw close × point-in-time SEC shares outstanding**. Valuation
+multiples use that PIT cap. Momentum, volatility, beta, and drawdown use
+adjusted closes and always warn `provider_adjusted_history_not_vintage_pit`.
 
 Daily bars become available at **16:15 exchange-local time** (converted to UTC).
 That is a conservative EquityTrace convention, not a claim about the exact
@@ -288,7 +293,7 @@ uv run equitytrace market rank-metric volatility_1y AAPL MSFT --as-of 2024-12-31
 
 SEC-only commands continue to work without a market-data API key.
 
-## Current limitations (v0.3b / 0.3.1.dev0)
+## Current limitations (v0.3.1)
 
 - P/E and P/S are FY only; quarterly TTM is not assembled
 - Provider-adjusted history is not a vendor-vintage PIT archive
@@ -320,9 +325,8 @@ SEC-only commands continue to work without a market-data API key.
 See [docs/roadmap.md](docs/roadmap.md).
 
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
-- **v0.3b** — Valuation, momentum, and risk (**this branch**, unreleased `0.3.1.dev0`)
-- **v0.3c** — Portfolio construction and backtesting
-- **v0.3c** — Portfolio construction and backtesting
+- **v0.3.1 / v0.3b** — Valuation, momentum, and risk (**completed**)
+- **v0.3c** — Portfolio construction and backtesting (**next**)
 - **v1.0** — Strategy builder and research interface
 
 ## License

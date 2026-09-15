@@ -1,3 +1,3 @@
 """EquityTrace: transparent stock research backed by filings, factors, and historical evidence."""
 
-__version__ = "0.3.1.dev0"
+__version__ = "0.3.1"
