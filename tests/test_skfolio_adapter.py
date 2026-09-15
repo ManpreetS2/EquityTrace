@@ -55,7 +55,7 @@ def test_mean_risk_configuration() -> None:
 def test_real_minimum_variance_solve() -> None:
     matrix = _synthetic_matrix()
     weights = minimum_variance_weights(matrix)
-    assert set(weights) == set(matrix.symbols)
+    assert tuple(weights) == tuple(sorted(matrix.symbols))
     for symbol in matrix.symbols:
         value = weights[symbol]
         assert math.isfinite(value)
@@ -66,8 +66,22 @@ def test_real_minimum_variance_solve() -> None:
 def test_order_determinism() -> None:
     forward = minimum_variance_weights(_synthetic_matrix(symbol_order=("AAA", "BBB")))
     reverse = minimum_variance_weights(_synthetic_matrix(symbol_order=("BBB", "AAA")))
-    assert forward["AAA"] == pytest.approx(reverse["AAA"], abs=2e-5)
-    assert forward["BBB"] == pytest.approx(reverse["BBB"], abs=2e-5)
+    assert tuple(forward) == ("AAA", "BBB")
+    assert tuple(reverse) == ("AAA", "BBB")
+    assert forward["AAA"] == pytest.approx(reverse["AAA"], abs=OPTIMIZER_NUMERICAL_TOLERANCE)
+    assert forward["BBB"] == pytest.approx(reverse["BBB"], abs=OPTIMIZER_NUMERICAL_TOLERANCE)
+
+
+def test_single_asset_is_fully_invested() -> None:
+    series = tuple(0.001 * math.sin(index / 17.0) for index in range(REQUIRED_RETURNS))
+    matrix = ReturnMatrix(
+        symbols=("AAA",),
+        dates=tuple(date(2020, 1, 1) for _ in range(REQUIRED_RETURNS + 1)),
+        returns={"AAA": series},
+    )
+    weights = minimum_variance_weights(matrix)
+    assert tuple(weights) == ("AAA",)
+    assert weights["AAA"] == pytest.approx(1.0)
 
 
 def test_fit_failure_surfaces_without_fallback() -> None:
@@ -95,9 +109,12 @@ def test_fit_failure_surfaces_without_fallback() -> None:
         ([-0.5, 1.5], "optimizer_invalid_weights"),
         ([0.4, 0.4], "optimizer_budget_violation"),
         ([0.5], "optimizer_invalid_weights"),
+        (["0.5", 0.5], "optimizer_invalid_weights"),
+        ([None, 1.0], "optimizer_invalid_weights"),
+        (object(), "optimizer_invalid_weights"),
     ],
 )
-def test_invalid_optimizer_output(weights: list[float], reason: str) -> None:
+def test_invalid_optimizer_output(weights: object, reason: str) -> None:
     matrix = _synthetic_matrix()
     model = MagicMock(spec=MeanRisk)
     model.weights_ = weights
@@ -122,6 +139,22 @@ def test_input_validation_rejects_short_history() -> None:
     with pytest.raises(OptimizerUnavailable) as exc:
         minimum_variance_weights(matrix)
     assert exc.value.reason == "optimizer_input_invalid"
+
+
+def test_input_validation_rejects_blank_and_duplicate_symbols() -> None:
+    series = tuple(0.01 for _ in range(REQUIRED_RETURNS))
+    blank = ReturnMatrix(symbols=("AAA", " "), dates=(), returns={"AAA": series, " ": series})
+    with pytest.raises(OptimizerUnavailable) as exc_blank:
+        minimum_variance_weights(blank)
+    assert exc_blank.value.reason == "optimizer_input_invalid"
+    dup = ReturnMatrix(
+        symbols=("AAA", "AAA"),
+        dates=(),
+        returns={"AAA": series},
+    )
+    with pytest.raises(OptimizerUnavailable) as exc_dup:
+        minimum_variance_weights(dup)
+    assert exc_dup.value.reason == "optimizer_input_invalid"
 
 
 def test_numerical_tolerance_clamps_near_bounds() -> None:

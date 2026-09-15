@@ -62,8 +62,9 @@ from equitytrace.repositories.portfolio import PortfolioRepository
 
 
 class PortfolioUnavailable(RuntimeError):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, selection_mixed: bool = False) -> None:
         self.reason = reason
+        self.selection_mixed = selection_mixed
         super().__init__(reason)
 
 
@@ -187,6 +188,7 @@ class BacktestEngine:
                 created,
                 PortfolioRunStatus.UNAVAILABLE,
                 exc.reason,
+                mixed_periods=exc.selection_mixed,
             )
         except PortfolioFailed as exc:
             result = self._terminal(
@@ -426,7 +428,13 @@ class BacktestEngine:
         except PortfolioUnavailable as exc:
             if not first_success:
                 raise
-            return _unavailable_rebalance(decision, effective, state, exc.reason)
+            return _unavailable_rebalance(
+                decision,
+                effective,
+                state,
+                exc.reason,
+                mixed=exc.selection_mixed,
+            )
 
         mixed = target.selection.mixed_fiscal_periods
         leakage_failures.extend(
@@ -440,7 +448,10 @@ class BacktestEngine:
         )
         if not self._targets_supported(target.weights, bars_by_symbol, effective):
             if not first_success:
-                raise PortfolioUnavailable("target_support_missing")
+                raise PortfolioUnavailable(
+                    "target_support_missing",
+                    selection_mixed=mixed,
+                )
             return _unavailable_rebalance(
                 decision,
                 effective,
@@ -510,12 +521,16 @@ class BacktestEngine:
         )
         if selection is None:
             raise PortfolioUnavailable("factor_universe_too_small")
+        mixed = selection.mixed_fiscal_periods
         names = selected_symbols(selection.ranked)
         if request.baseline is PortfolioBaseline.EQUAL_WEIGHT:
             try:
                 weights = equal_weight(names)
             except BaselineUnavailable as exc:
-                raise PortfolioUnavailable(exc.reason) from exc
+                raise PortfolioUnavailable(
+                    exc.reason,
+                    selection_mixed=mixed,
+                ) from exc
             price_at: tuple[datetime, ...] = ()
             price_dates: tuple[date, ...] = ()
         else:
@@ -526,7 +541,10 @@ class BacktestEngine:
                 session_date=session_date,
             )
             if matrix is None:
-                raise PortfolioUnavailable("baseline_unavailable")
+                raise PortfolioUnavailable(
+                    "baseline_unavailable",
+                    selection_mixed=mixed,
+                )
             subset = {name: bars_by_symbol.get(name, []) for name in names}
             try:
                 if request.baseline is PortfolioBaseline.INVERSE_VOL:
@@ -534,7 +552,10 @@ class BacktestEngine:
                 else:
                     weights = minimum_variance_weights(matrix)
             except (BaselineUnavailable, OptimizerUnavailable) as exc:
-                raise PortfolioUnavailable(exc.reason) from exc
+                raise PortfolioUnavailable(
+                    exc.reason,
+                    selection_mixed=mixed,
+                ) from exc
             price_at, price_dates = _matrix_evidence(subset, decision_at, session_date)
         selection = selection.model_copy(
             update={
@@ -601,9 +622,11 @@ class BacktestEngine:
         status: PortfolioRunStatus,
         reason: str,
         audit: LeakageAuditResult | None = None,
+        *,
+        mixed_periods: bool = False,
     ) -> BacktestResult:
         if audit is None:
-            audit = build_audit_result(failures=[], mixed_periods=False)
+            audit = build_audit_result(failures=[], mixed_periods=mixed_periods)
         return BacktestResult(
             run_id=run_id,
             status=status,
