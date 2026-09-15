@@ -138,8 +138,10 @@ Standing warnings: `provider_adjusted_history_not_vintage_pit`,
 Each security/ticker uses only its latest annual period known at `decision_at`.
 If that factor is unavailable, the name is excluded. Older fiscal years are not
 substituted. Fundamentals are issuer-level; v0.3c does not yet choose among
-multiple securities/share classes for one issuer. An explicit universe that
-resolves more than one ticker to the same CIK is unavailable
+multiple securities/share classes for one issuer. Every normalized research-universe ticker must resolve an issuer CIK
+(`issuer_identity_unavailable`). Calendar and benchmark symbols are excluded
+unless they are also universe tickers. An explicit universe that resolves more
+than one ticker to the same CIK is unavailable
 (`multiple_securities_same_issuer_unsupported`) rather than guessed.
 
 ### Schedules
@@ -173,6 +175,16 @@ Later unavailable rebalances: turnover 0, cost 0, drifted state continues.
 
 Intersect common **price dates** first, then 252 close-to-close returns on those
 dates. Sample standard deviation. No forward fill.
+
+### Minimum variance (skfolio adapter)
+
+Uses the same 252-interval common-date matrix as inverse vol. skfolio `MeanRisk`
+minimizes variance with long-only `[0, 1]` bounds, budget 1, CLARABEL solver,
+zero skfolio transaction/management fees, no fallback, and no awareness of
+current holdings. Optimizer failure or invalid weights map to unavailable research
+results (`optimizer_fit_failed`, `optimizer_input_invalid`,
+`optimizer_invalid_weights`, `optimizer_budget_violation`). EquityTrace still
+owns drift, turnover, and `cost_bps` accounting.
 
 ### Performance
 

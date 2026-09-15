@@ -47,11 +47,11 @@
 ### v0.3c — Portfolio construction and backtesting (in review)
 
 Native weight-return research backtester (`0.3.2.dev0`, latest release remains
-v0.3.1). This slice is the foundation only; v0.3c is not complete until the
-skfolio adapter lands.
+v0.3.1). Native foundation = implemented; minimum-variance adapter = in review.
+v0.3c is not complete until that adapter is independently reviewed and merged.
 
 * Latest-FY factor selection per security/ticker and exact top-N
-* Equal weight and inverse-volatility baselines
+* Equal weight, inverse-volatility, and skfolio-backed minimum-variance baselines
 * Reference-calendar decision vs target-effective timing
 * Explicit schedules fail closed; monthly/quarterly use last in-window sessions
 * Same-issuer multi-security universes are unavailable (no share-class guess)
@@ -60,7 +60,8 @@ skfolio adapter lands.
 * Native backtests currently require `adjustment_mode=all`
 * CLI: `portfolio backtest`
 
-Not in this slice: skfolio / minimum-variance optimizer.
+Not in v0.3c: HRP, Black-Litterman, CVaR, risk budgeting, max-turnover
+optimization, or skfolio transaction-cost modeling (EquityTrace costs stay native).
 
 ### v1.0
 

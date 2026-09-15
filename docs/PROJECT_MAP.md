@@ -12,14 +12,14 @@ this map in the same PR.
 | Field | Value |
 | --- | --- |
 | Package | `equitytrace` `0.3.2.dev0` |
-| Release target | `v0.3.1` released; native v0.3c backtest foundation in review |
+| Release target | `v0.3.1` released; min-variance adapter in review |
 | v0.3a | complete (v0.3.0) |
 | v0.3b | complete (v0.3.1) |
-| Next milestone | remainder of v0.3c — skfolio min-variance adapter |
+| Next milestone | v0.3c review/merge (minimum-variance adapter) |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
-| Not present today | skfolio optimizer adapter (v0.3c PR 2) |
+| Not present today | additional optimizers beyond min-variance |
 
 This map describes files that exist in the live tree. Planned packages are
 labeled **future** and must not be treated as implemented.
@@ -59,7 +59,7 @@ EquityTrace/
 │   ├── financials/           # canonical statements (on demand)
 │   ├── factors/              # fiscal-period factors + ranking
 │   ├── market/               # prices, shares, market cap, window analytics
-│   └── portfolio/            # native research backtest (no skfolio yet)
+│   └── portfolio/            # native research backtest + skfolio_adapter
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
@@ -69,7 +69,8 @@ EquityTrace/
 └── .env.example
 ```
 
-There is no frontend, no skfolio adapter, and no second market provider.
+There is no frontend and no second market provider. skfolio is used only inside
+`portfolio/skfolio_adapter.py` for minimum-variance target weights.
 
 ## Runtime architecture
 
@@ -98,6 +99,7 @@ portfolio backtest
   -> financials.list_available_annual_periods + factors.engine (latest FY per ticker)
   -> factors.ranking.rank_factor_results (per-name periods)
   -> portfolio.baselines (equal weight / inverse vol)
+  -> portfolio.skfolio_adapter (min variance targets only)
   -> portfolio.engine (drift, costs, equity)
   -> repositories.portfolio persist
   -> CLI `equitytrace portfolio backtest`
@@ -203,7 +205,8 @@ CLI: `src/equitytrace/cli_market.py`
 | `src/equitytrace/portfolio/calendar.py` | SPY (or other) reference sessions |
 | `src/equitytrace/portfolio/signals.py` | Latest-FY factor eligibility + exact top-N |
 | `src/equitytrace/portfolio/returns.py` | Common-date return matrices |
-| `src/equitytrace/portfolio/baselines.py` | Equal weight / inverse vol targets only |
+| `src/equitytrace/portfolio/baselines.py` | Equal weight / inverse vol targets |
+| `src/equitytrace/portfolio/skfolio_adapter.py` | Min-variance target weights only |
 | `src/equitytrace/portfolio/engine.py` | Drift, costs, orchestration |
 | `src/equitytrace/portfolio/metrics.py` | Compact performance statistics |
 | `src/equitytrace/portfolio/audit.py` | Leakage audit result |
@@ -360,8 +363,8 @@ v0.3a correctness still concentrates here:
 
 See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
 v0.3.1 (latest release). Native v0.3c portfolio/backtest foundation is
-implemented on `0.3.2.dev0` and in review. The skfolio adapter is **not yet
-implemented**. v0.3c is not complete until that adapter lands.
+implemented on `0.3.2.dev0`. Minimum-variance adapter is **in review**. v0.3c is
+not complete until that adapter is independently reviewed and merged.
 
 ### v0.3a
 
@@ -391,6 +394,7 @@ src/equitytrace/portfolio/
 ├── signals.py
 ├── returns.py
 ├── baselines.py
+├── skfolio_adapter.py
 ├── engine.py
 ├── metrics.py
 └── audit.py
@@ -398,10 +402,12 @@ src/equitytrace/portfolio/
 
 CLI: `equitytrace portfolio backtest`. Persistence: `0.3.0-c` tables.
 v0.3c native backtests currently require `adjustment_mode=all`.
-Same-issuer multi-security universes are unavailable. Explicit dates fail closed.
+Same-issuer multi-security universes are unavailable; unresolved issuer CIK on a
+research ticker is unavailable. Explicit dates fail closed. Minimum variance:
+long-only, fully invested, CLARABEL, 252 common returns, no optimizer fallback;
+costs/drift/timing remain native.
 
-**skfolio adapter = NOT YET IMPLEMENTED.** Do not add `optimizer.py`,
-`skfolio_adapter.py`, or `constraints.py` in this slice.
+Do not add a generic optimizer framework or import skfolio outside the adapter.
 
 ### v1.0
 
