@@ -195,6 +195,35 @@ def test_invalid_factor(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no
     assert result.exit_code != 0
 
 
+def test_min_variance_baseline_alias(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    _prepare(tmp_path, monkeypatch)
+    result = runner.invoke(
+        app,
+        [
+            "portfolio",
+            "backtest",
+            "--tickers",
+            "AAA,BBB",
+            "--factor",
+            "roa",
+            "--top-n",
+            "2",
+            "--baseline",
+            "min-variance",
+            "--start",
+            D0.isoformat(),
+            "--end",
+            D3.isoformat(),
+            "--schedule",
+            "explicit",
+            "--explicit-dates",
+            D0.isoformat(),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "baseline_unavailable" in result.output
+
+
 def test_invalid_top_n(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _prepare(tmp_path, monkeypatch)
     result = runner.invoke(

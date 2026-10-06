@@ -11,8 +11,10 @@ filing accession, reporting period, and public availability timestamp.
 
 Version **0.3.1** is the latest release (v0.3b). The `0.3.2.dev0` line adds a
 native **weight-return research backtester**: latest-FY factor selection per
-security/ticker, exact top-N, equal-weight / inverse-vol baselines, drifting
-weights, and transparent costs. It is not an execution simulator and does not
+security/ticker, exact top-N, equal-weight / inverse-vol / minimum-variance
+baselines (minimum variance uses a narrow skfolio adapter on 252 common daily
+returns), drifting weights, and transparent costs. It is not an execution
+simulator and does not
 invent fill prices or share quantities. v0.3c does not choose among multiple
 securities/share classes for one issuer.
 
@@ -300,7 +302,7 @@ SEC-only commands continue to work without a market-data API key.
 - Native backtests are research weight-return paths, not execution simulations
 - v0.3c native backtests currently require `adjustment_mode=all`; raw close remains valuation-only
 - v0.3c does not yet choose among multiple securities/share classes for one issuer; ambiguous same-issuer universes are unavailable
-- No skfolio optimizer yet (next v0.3c slice)
+- Minimum variance only (no HRP, Black-Litterman, CVaR, or turnover-aware optimization)
 - No frontend / research UI
 - Canonical statements are computed on demand (not fully materialized)
 - Concept mappings cover common us-gaap tags; unusual issuer tags may be missing
@@ -328,7 +330,7 @@ See [docs/roadmap.md](docs/roadmap.md).
 
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
 - **v0.3.1 / v0.3b** — Valuation, momentum, and risk (**completed**)
-- **v0.3c** — Native portfolio/backtest foundation (**in review**; skfolio adapter later)
+- **v0.3c** — Native portfolio/backtest + min-variance adapter (**in review**)
 - **v1.0** — Strategy builder and research interface
 
 ## License

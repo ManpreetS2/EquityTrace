@@ -39,6 +39,8 @@ _BASELINE_ALIASES = {
     "inverse-vol": PortfolioBaseline.INVERSE_VOL,
     "inverse_vol": PortfolioBaseline.INVERSE_VOL,
     "inverse-volatility": PortfolioBaseline.INVERSE_VOL,
+    "min-variance": PortfolioBaseline.MIN_VARIANCE,
+    "min_variance": PortfolioBaseline.MIN_VARIANCE,
 }
 
 
@@ -65,7 +67,9 @@ def _parse_baseline(value: str) -> PortfolioBaseline:
     key = value.strip().lower()
     baseline = _BASELINE_ALIASES.get(key)
     if baseline is None:
-        raise ValueError(f"Unknown baseline '{value}'. Use equal-weight or inverse-vol.")
+        raise ValueError(
+            f"Unknown baseline '{value}'. Use equal-weight, inverse-vol, or min-variance."
+        )
     return baseline
 
 
@@ -89,7 +93,7 @@ def backtest_cmd(
     top_n: Annotated[int, typer.Option("--top-n", help="Exact number of names to hold.")] = 1,
     baseline: Annotated[
         str,
-        typer.Option("--baseline", help="equal-weight or inverse-vol."),
+        typer.Option("--baseline", help="equal-weight, inverse-vol, or min-variance."),
     ] = "equal-weight",
     schedule: Annotated[
         str,

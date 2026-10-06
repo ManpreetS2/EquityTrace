@@ -20,6 +20,7 @@ ADJUSTED_HISTORY_WARNING = "provider_adjusted_history_not_vintage_pit"
 SURVIVORSHIP_WARNING = "survivorship_bias_possible"
 MIXED_PERIODS_WARNING = "mixed_fiscal_periods"
 SAME_ISSUER_UNAVAILABLE = "multiple_securities_same_issuer_unsupported"
+ISSUER_IDENTITY_UNAVAILABLE = "issuer_identity_unavailable"
 
 STANDING_WARNINGS = (ADJUSTED_HISTORY_WARNING, SURVIVORSHIP_WARNING)
 
@@ -46,6 +47,7 @@ class PortfolioSchedule(StrEnum):
 class PortfolioBaseline(StrEnum):
     EQUAL_WEIGHT = "equal_weight"
     INVERSE_VOL = "inverse_vol"
+    MIN_VARIANCE = "min_variance"
 
 
 class BacktestRequest(BaseModel):

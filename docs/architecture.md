@@ -141,16 +141,22 @@ transports or injected providers. No live SEC or Twelve Data calls in CI.
    - Weight/notional research model (no fills, shares, or execution)
    - Decision after session `available_at`; target effective next calendar session
    - Latest FY per security/ticker (no silent older-year fallback)
-   - Exact top-N, equal weight, inverse vol on common-date 252-return matrices
-   - Drift, gross turnover, symmetric bps costs, leakage audit
+   - Exact top-N; equal weight, inverse vol, or skfolio-backed minimum variance
+     on common-date 252-return matrices (long-only, fully invested, CLARABEL;
+     no optimizer fallback)
+   - Drift, gross turnover, symmetric bps costs, leakage audit (costs are never
+     passed into skfolio)
    - Native v0.3c backtests require `adjustment_mode=all` (provider-adjusted
      research closes). Raw close remains valuation / market-cap only.
+   - Every research-universe ticker must resolve an issuer CIK
+     (`issuer_identity_unavailable` otherwise). Calendar and benchmark symbols
+     are not subject to that rule unless they are also universe tickers.
    - Multiple universe securities that share one issuer CIK are unavailable
      (`multiple_securities_same_issuer_unsupported`); v0.3c does not choose a
      share class.
    - Explicit schedules fail closed: every unique requested date must form an
      in-window (decision, target-effective) pair.
-   - skfolio adapter is not implemented yet
+   - `portfolio.skfolio_adapter` is a narrow ReturnMatrix → target-weight bridge
+     only (no WalkForward, turnover-aware optimization, or alternate objectives)
 
-Future (not in this tree): skfolio min-variance (remainder of v0.3c) and a
-research UI (v1.0).
+Future (not in this tree): additional optimizers and a research UI (v1.0).

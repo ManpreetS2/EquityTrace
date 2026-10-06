@@ -142,6 +142,19 @@ if repo in path.parents and (repo / "src") in path.parents:
     raise SystemExit(f"imported repo source: {{path}}")
 if equitytrace.__version__ != {version!r} or version("equitytrace") != {version!r}:
     raise SystemExit("installed version does not match pyproject")
+import skfolio
+from importlib.metadata import version as pkg_version
+if pkg_version("skfolio") != "1.2.3":
+    raise SystemExit(f"skfolio version {{pkg_version('skfolio')!r}} != '1.2.3'")
+from equitytrace.portfolio.skfolio_adapter import mean_risk_minimum_variance_model
+model = mean_risk_minimum_variance_model()
+if model.solver != "CLARABEL":
+    raise SystemExit(f"solver={{model.solver!r}}")
+if model.fallback is not None:
+    raise SystemExit(f"fallback={{model.fallback!r}}")
+if model.raise_on_failure is not False:
+    raise SystemExit(f"raise_on_failure={{model.raise_on_failure!r}}")
+print("SKFOLIO", pkg_version("skfolio"))
 """
     with tempfile.TemporaryDirectory(prefix="et-pkg-smoke-") as tmp:
         # Isolated envs live under the temp dir, not the checkout.
