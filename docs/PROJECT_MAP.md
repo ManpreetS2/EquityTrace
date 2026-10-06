@@ -11,11 +11,12 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `0.3.2.dev0` |
-| Release target | `v0.3.1` released; min-variance adapter in review |
+| Package | `equitytrace` `0.3.2` |
+| Release target | `v0.3.2` (v0.3c complete) |
 | v0.3a | complete (v0.3.0) |
 | v0.3b | complete (v0.3.1) |
-| Next milestone | v0.3c review/merge (minimum-variance adapter) |
+| v0.3c | complete (v0.3.2) |
+| Next milestone | v1.0 (not implemented yet) |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
@@ -362,9 +363,8 @@ v0.3a correctness still concentrates here:
 ## Roadmap touchpoints
 
 See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
-v0.3.1 (latest release). Native v0.3c portfolio/backtest foundation is
-implemented on `0.3.2.dev0`. Minimum-variance adapter is **in review**. v0.3c is
-not complete until that adapter is independently reviewed and merged.
+v0.3.1. v0.3c (native portfolio/backtest + minimum-variance adapter) is complete
+in v0.3.2, the latest release. Next milestone is v1.0 (not implemented yet).
 
 ### v0.3a
 
@@ -384,8 +384,7 @@ market CLI.
 
 ### v0.3c
 
-Native research portfolio/backtest (**implemented, in review**, package
-`0.3.2.dev0`):
+Native research portfolio/backtest (**completed** in v0.3.2):
 
 ```text
 src/equitytrace/portfolio/

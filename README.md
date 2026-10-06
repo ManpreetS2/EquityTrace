@@ -9,8 +9,8 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **0.3.1** is the latest release (v0.3b). The `0.3.2.dev0` line adds a
-native **weight-return research backtester**: latest-FY factor selection per
+Version **0.3.2** is the latest release (v0.3c). It includes a native
+**weight-return research backtester**: latest-FY factor selection per
 security/ticker, exact top-N, equal-weight / inverse-vol / minimum-variance
 baselines (minimum variance uses a narrow skfolio adapter on 252 common daily
 returns), drifting weights, and transparent costs. It is not an execution
@@ -330,8 +330,8 @@ See [docs/roadmap.md](docs/roadmap.md).
 
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
 - **v0.3.1 / v0.3b** — Valuation, momentum, and risk (**completed**)
-- **v0.3c** — Native portfolio/backtest + min-variance adapter (**in review**)
-- **v1.0** — Strategy builder and research interface
+- **v0.3.2 / v0.3c** — Native portfolio/backtest + min-variance adapter (**completed**)
+- **v1.0** — Strategy builder and research interface (not implemented yet)
 
 ## License
 

@@ -1,6 +1,6 @@
 # Research metrics
 
-Formulas and point-in-time rules for EquityTrace v0.3.2.dev0 valuation factors,
+Formulas and point-in-time rules for EquityTrace v0.3.2 valuation factors,
 market-window analytics, and native research backtests. Ambiguous inputs return `UNAVAILABLE` rather than a
 guess.
 

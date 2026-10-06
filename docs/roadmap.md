@@ -44,11 +44,10 @@
 * CLI: `market analytics`, `market rank-metric`
 * Formulas: `docs/metrics.md`
 
-### v0.3c — Portfolio construction and backtesting (in review)
+### v0.3c / v0.3.2 — Portfolio construction and backtesting (completed)
 
-Native weight-return research backtester (`0.3.2.dev0`, latest release remains
-v0.3.1). Native foundation = implemented; minimum-variance adapter = in review.
-v0.3c is not complete until that adapter is independently reviewed and merged.
+Native weight-return research backtester released as **v0.3.2**. Includes the
+narrow skfolio minimum-variance adapter.
 
 * Latest-FY factor selection per security/ticker and exact top-N
 * Equal weight, inverse-volatility, and skfolio-backed minimum-variance baselines
@@ -63,7 +62,7 @@ v0.3c is not complete until that adapter is independently reviewed and merged.
 Not in v0.3c: HRP, Black-Litterman, CVaR, risk budgeting, max-turnover
 optimization, or skfolio transaction-cost modeling (EquityTrace costs stay native).
 
-### v1.0
+### v1.0 (next milestone — not implemented yet)
 
 * Strategy builder
 * Research interface

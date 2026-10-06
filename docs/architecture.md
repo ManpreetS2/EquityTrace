@@ -1,4 +1,4 @@
-# Architecture (v0.3.2.dev0)
+# Architecture (v0.3.2)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
 normalization, persistence, canonical statements, factors, market data, and CLI.
