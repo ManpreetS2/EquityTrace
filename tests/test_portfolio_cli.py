@@ -37,7 +37,7 @@ def test_portfolio_help() -> None:
 def test_version_still_dev_line() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.3.2.dev0" in result.output
+    assert "0.3.2" in result.output
 
 
 def test_successful_toy_backtest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

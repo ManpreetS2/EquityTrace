@@ -1,8 +1,7 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace `0.3.2.dev0` (native v0.3c
-foundation merged; minimum-variance adapter in review; v0.3.1 remains the latest
-release).
+Exact commands for a new developer on EquityTrace `0.3.2` (v0.3c portfolio and
+minimum-variance adapter complete; latest release is v0.3.2).
 
 Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)

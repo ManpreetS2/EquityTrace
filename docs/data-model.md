@@ -1,7 +1,7 @@
-# Data model (v0.3.2.dev0)
+# Data model (v0.3.2)
 
-Latest release is **v0.3.1**. This document describes the live schema on the
-`0.3.2.dev0` development line.
+Latest release is **v0.3.2**. This document describes the live schema for that
+release.
 
 ## Conceptual model
 
