@@ -1,0 +1,17 @@
+{
+  "name": "Basic quality equal-weight example",
+  "description": "Example research configuration only. Not investment advice.",
+  "tickers": ["AAPL", "MSFT", "GOOGL"],
+  "factor": "basic_quality_score",
+  "top_n": 2,
+  "baseline": "equal_weight",
+  "start_date": "2020-01-01",
+  "end_date": "2024-12-31",
+  "schedule": "monthly",
+  "calendar_symbol": "SPY",
+  "benchmark_symbol": "SPY",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}
