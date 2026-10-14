@@ -9,14 +9,16 @@ fundamental factors, and reproducible company rankings.
 Every normalized value and factor can be traced to its underlying SEC concept,
 filing accession, reporting period, and public availability timestamp.
 
-Version **0.3.2** is the latest release (v0.3c). It includes a native
-**weight-return research backtester**: latest-FY factor selection per
-security/ticker, exact top-N, equal-weight / inverse-vol / minimum-variance
-baselines (minimum variance uses a narrow skfolio adapter on 252 common daily
-returns), drifting weights, and transparent costs. It is not an execution
-simulator and does not
-invent fill prices or share quantities. v0.3c does not choose among multiple
-securities/share classes for one issuer.
+Version **0.3.2** is the latest published release (v0.3c). Active development is
+`1.0.0.dev0`. The released line includes a native **weight-return research
+backtester**: latest-FY factor selection per security/ticker, exact top-N,
+equal-weight / inverse-vol / minimum-variance baselines (minimum variance uses a
+narrow skfolio adapter on 252 common daily returns), drifting weights, and
+transparent costs. It is not an execution simulator and does not invent fill
+prices or share quantities. v0.3c does not choose among multiple
+securities/share classes for one issuer. v1.0 Milestone 1 adds typed research
+strategy JSON plus `equitytrace research validate|run|show` (HTML reporting is
+not implemented yet; v1.0 is not released).
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
@@ -331,7 +333,8 @@ See [docs/roadmap.md](docs/roadmap.md).
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
 - **v0.3.1 / v0.3b** — Valuation, momentum, and risk (**completed**)
 - **v0.3.2 / v0.3c** — Native portfolio/backtest + min-variance adapter (**completed**)
-- **v1.0** — Strategy builder and research interface (not implemented yet)
+- **v1.0** — Strategy builder / research interface (**in progress** on `1.0.0.dev0`;
+  Milestone 1 = typed strategies + research CLI; not released)
 
 ## License
 

@@ -11,12 +11,12 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `0.3.2` |
-| Release target | `v0.3.2` (v0.3c complete) |
+| Package | `equitytrace` `1.0.0.dev0` |
+| Latest published release | `v0.3.2` (v0.3c complete) |
 | v0.3a | complete (v0.3.0) |
 | v0.3b | complete (v0.3.1) |
 | v0.3c | complete (v0.3.2) |
-| Next milestone | v1.0 (not implemented yet) |
+| Next milestone | v1.0 (Milestone 1: research strategies in progress) |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
@@ -52,6 +52,7 @@ EquityTrace/
 │   ├── cli.py                # SEC / statements / factors CLI
 │   ├── cli_market.py         # market ingest / prices / cap / analytics CLI
 │   ├── cli_portfolio.py      # portfolio backtest CLI
+│   ├── cli_research.py       # research validate|run|show CLI
 │   ├── config.py             # EQUITYTRACE_* settings (+ FILINGEDGE_* fallback)
 │   ├── database.py           # schema, init, v0.2 / v0.3a / v0.3b / v0.3c additive repairs
 │   ├── models.py             # Issuer / Security / Filing / FinancialFact
@@ -60,7 +61,8 @@ EquityTrace/
 │   ├── financials/           # canonical statements (on demand)
 │   ├── factors/              # fiscal-period factors + ranking
 │   ├── market/               # prices, shares, market cap, window analytics
-│   └── portfolio/            # native research backtest + skfolio_adapter
+│   ├── portfolio/            # native research backtest + skfolio_adapter
+│   └── strategy/             # ResearchStrategy JSON + economic fingerprints
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
@@ -175,6 +177,8 @@ CLI: `src/equitytrace/cli_market.py`
 | `src/equitytrace/cli.py` | SEC/statements/factors/rank CLI; `filingedge` deprecation wrapper |
 | `src/equitytrace/cli_market.py` | Market CLI; analytics/rank-metric; non-zero on failed ingest |
 | `src/equitytrace/cli_portfolio.py` | `equitytrace portfolio backtest` |
+| `src/equitytrace/cli_research.py` | `equitytrace research validate\|run\|show` |
+| `src/equitytrace/strategy/` | Typed ResearchStrategy JSON, canonicalize, fingerprint |
 | `src/equitytrace/config.py` | pydantic-settings; `EQUITYTRACE_*` / legacy `FILINGEDGE_*` |
 | `src/equitytrace/database.py` | DuckDB schema + additive v0.2 / v0.3a / v0.3b / v0.3c repairs |
 | `src/equitytrace/models.py` | Core SEC domain models + `fact_id` |
@@ -322,6 +326,8 @@ These must never be violated:
 | Native portfolio backtest | `tests/test_portfolio_models.py`, `tests/test_portfolio_backtest.py` |
 | Portfolio persistence | `tests/test_portfolio_repository.py` |
 | Portfolio CLI | `tests/test_portfolio_cli.py` |
+| Research strategies | `tests/test_strategy.py` |
+| Research CLI | `tests/test_research_cli.py` |
 | v0.3c migration | `tests/test_migration_v03c.py` |
 | Portfolio leakage / restatements | `tests/test_portfolio_leakage.py` |
 | Fixtures | `tests/fixtures/sec/`, `tests/helpers/` |
@@ -364,7 +370,9 @@ v0.3a correctness still concentrates here:
 
 See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
 v0.3.1. v0.3c (native portfolio/backtest + minimum-variance adapter) is complete
-in v0.3.2, the latest release. Next milestone is v1.0 (not implemented yet).
+in v0.3.2, the latest published release. Active development is `1.0.0.dev0`.
+v1.0 Milestone 1 (typed research strategies + research CLI) is in progress; HTML
+reporting and v1.0 release are not done yet.
 
 ### v0.3a
 
@@ -410,7 +418,11 @@ Do not add a generic optimizer framework or import skfolio outside the adapter.
 
 ### v1.0
 
-Strategy builder and research interface (not in this repo layout today).
+Strategy builder and research interface. Milestone 1 (in progress on
+`1.0.0.dev0`): `strategy/` + `cli_research.py` (`validate` / `run` / `show`).
+Economic identity is a SHA-256 of the canonical BacktestRequest. Strategy name
+is not stored on `portfolio_runs`. HTML reporting is not implemented yet.
+v1.0 is not released.
 
 ### post-v1 / separate quant platform
 
