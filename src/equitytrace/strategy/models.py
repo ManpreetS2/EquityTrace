@@ -13,14 +13,37 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+import re
+from datetime import date, datetime
 from math import isfinite
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from equitytrace.factors.registry import UnknownFactorError, normalize_factor_name
 from equitytrace.market.models import MarketDataProviderName, PriceAdjustmentMode
 from equitytrace.portfolio.models import BacktestRequest, PortfolioBaseline, PortfolioSchedule
+
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+
+
+def parse_strategy_date(value: object) -> date:
+    """Accept a calendar date or an exact YYYY-MM-DD string.
+
+    Datetime objects and every other representation are rejected. There is no
+    timezone conversion.
+    """
+    if isinstance(value, datetime):
+        raise ValueError("dates must be YYYY-MM-DD, not datetimes.")
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and _ISO_DATE.fullmatch(value):
+        year_text, month_text, day_text = value.split("-")
+        try:
+            return date(int(year_text), int(month_text), int(day_text))
+        except ValueError as exc:
+            raise ValueError(f"invalid calendar date '{value}'.") from exc
+    raise ValueError("dates must be YYYY-MM-DD.")
 
 
 class ResearchStrategy(BaseModel):
@@ -82,6 +105,11 @@ class ResearchStrategy(BaseModel):
             raise ValueError("Provide at least one ticker.")
         return tuple(sorted(cleaned))
 
+    @field_validator("start_date", "end_date", mode="before")
+    @classmethod
+    def _strict_range_dates(cls, value: object) -> date:
+        return parse_strategy_date(value)
+
     @field_validator("factor")
     @classmethod
     def _canonicalize_factor(cls, value: str) -> str:
@@ -125,12 +153,7 @@ class ResearchStrategy(BaseModel):
         parsed: list[date] = []
         seen: set[date] = set()
         for item in value:
-            if isinstance(item, date) and not isinstance(item, type(None)):
-                day = item
-            elif isinstance(item, str):
-                day = date.fromisoformat(item.strip())
-            else:
-                raise ValueError("explicit_dates entries must be ISO dates.")
+            day = parse_strategy_date(item)
             if day in seen:
                 continue
             seen.add(day)
@@ -197,15 +220,81 @@ class ResearchStrategy(BaseModel):
         )
 
 
-def fingerprint_request(request: BacktestRequest) -> str:
-    """SHA-256 of the economic BacktestRequest (canonical JSON).
+def canonical_economic_payload(request: BacktestRequest) -> dict[str, Any]:
+    """Economic JSON for fingerprinting. Does not mutate ``request``.
 
-    Excludes strategy display metadata (name/description), run_id, and timestamps.
-    Safe to recompute from a persisted request loaded via PortfolioRepository.get_run.
+    Legacy BacktestRequest rows may keep input ticker order and factor aliases.
+    Identity uses the sorted universe and the registry factor name instead.
     """
     payload = request.model_dump(mode="json")
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    payload["tickers"] = _canonical_tickers(payload.get("tickers"))
+    payload["factor"] = normalize_factor_name(str(payload["factor"]))
+    payload["explicit_dates"] = _canonical_explicit_dates(payload.get("explicit_dates"))
+    payload["calendar_symbol"] = _canonical_symbol(payload.get("calendar_symbol")) or ""
+    payload["benchmark_symbol"] = _canonical_symbol(payload.get("benchmark_symbol"))
+    payload["start_date"] = _stable_iso_date(payload.get("start_date"))
+    payload["end_date"] = _stable_iso_date(payload.get("end_date"))
+    return payload
+
+
+def fingerprint_request(request: BacktestRequest) -> str:
+    """SHA-256 of the canonical economic BacktestRequest.
+
+    Excludes strategy display metadata (name/description), run_id, and timestamps.
+    Safe to recompute from a persisted request loaded via PortfolioRepository.get_run,
+    including requests created on the legacy portfolio path.
+    """
+    encoded = json.dumps(
+        canonical_economic_payload(request),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _canonical_tickers(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, str):
+            continue
+        symbol = raw.strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        cleaned.append(symbol)
+    cleaned.sort()
+    return cleaned
+
+
+def _canonical_explicit_dates(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    days: set[str] = set()
+    for item in value:
+        if isinstance(item, str):
+            days.add(_stable_iso_date(item))
+    return sorted(days)
+
+
+def _canonical_symbol(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip().upper()
+    return text or None
+
+
+def _stable_iso_date(value: object) -> str:
+    if isinstance(value, datetime):
+        raise ValueError("fingerprint dates must be calendar dates.")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str) and _ISO_DATE.fullmatch(value):
+        return value
+    raise ValueError("fingerprint dates must be YYYY-MM-DD.")
 
 
 def fingerprint_strategy(strategy: ResearchStrategy) -> str:

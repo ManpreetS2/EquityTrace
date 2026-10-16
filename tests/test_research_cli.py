@@ -10,7 +10,13 @@ from typer.testing import CliRunner
 from equitytrace.cli import app
 from equitytrace.config import clear_settings_cache
 from equitytrace.database import Database, initialize_database
-from equitytrace.portfolio.models import PortfolioRunStatus
+from equitytrace.portfolio.engine import BacktestEngine
+from equitytrace.portfolio.models import (
+    BacktestRequest,
+    PortfolioBaseline,
+    PortfolioRunStatus,
+    PortfolioSchedule,
+)
 from equitytrace.repositories.portfolio import PortfolioRepository
 from equitytrace.strategy.io import load_strategy
 from equitytrace.strategy.models import fingerprint_request, fingerprint_strategy
@@ -82,6 +88,38 @@ def test_validate_success_no_database(tmp_path: Path, monkeypatch) -> None:  # t
     assert "roa" in result.output
     assert "higher_is_better" in result.output
     assert "Toy research" in result.output
+
+
+def test_validate_and_run_reject_unsafe_json_without_traceback(tmp_path: Path) -> None:
+    files = {
+        "utf8.json": None,
+        "dup-root.json": (
+            '{"name": "Toy research", "factor": "roa", "factor": "fcf_yield", '
+            '"tickers": ["AAA"], "top_n": 1, "baseline": "equal_weight", '
+            '"start_date": "2024-01-02", "end_date": "2024-01-31", "schedule": "monthly"}'
+        ),
+        "dup-nested.json": (
+            '{"name": "Toy research", "tickers": ["AAA"], "factor": "roa", "top_n": 1, '
+            '"baseline": "equal_weight", "start_date": "2024-01-02", '
+            '"end_date": "2024-01-31", "schedule": "monthly", "notes": {"a": 1, "a": 2}}'
+        ),
+        "malformed.json": "{",
+    }
+    utf8 = tmp_path / "utf8.json"
+    utf8.write_bytes(b'{"name": "\xff"}')
+    paths = [utf8]
+    for name, text in files.items():
+        if text is None:
+            continue
+        path = tmp_path / name
+        path.write_text(text, encoding="utf-8")
+        paths.append(path)
+    for path in paths:
+        for command in ("validate", "run"):
+            result = runner.invoke(app, ["research", command, "--strategy", str(path)])
+            assert result.exit_code == 1
+            assert "Traceback" not in result.output
+            assert "Error:" in result.output
 
 
 def test_validate_malformed_json(tmp_path: Path) -> None:
@@ -311,9 +349,44 @@ def test_show_missing_run_exit_1(tmp_path: Path, monkeypatch) -> None:  # type: 
     assert "No portfolio run found" in result.output
 
 
-def test_persistence_roundtrip_fingerprint(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    from equitytrace.portfolio.engine import BacktestEngine
+def test_legacy_loaded_request_fingerprint_is_canonical(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    db_path, _strategy_path = _prepare(tmp_path, monkeypatch)
+    request = BacktestRequest(
+        tickers=("bbb", " AAA ", "aaa"),
+        factor="ROA",
+        top_n=2,
+        baseline=PortfolioBaseline.EQUAL_WEIGHT,
+        start_date=D0,
+        end_date=D3,
+        schedule=PortfolioSchedule.EXPLICIT,
+        explicit_dates=(D1, D0, D0),
+        calendar_symbol="spy",
+        benchmark_symbol=" spy ",
+    )
+    expected = fingerprint_strategy(
+        load_strategy(
+            _write_strategy(
+                tmp_path / "canonical.json",
+                tickers=["AAA", "BBB"],
+                factor="roa",
+                explicit_dates=[D0.isoformat(), D1.isoformat()],
+            )
+        )
+    )
+    db = initialize_database(db_path)
+    with db.session() as conn:
+        result = BacktestEngine(conn).run(request)
+        loaded = PortfolioRepository(conn).get_run(result.run_id)
+    assert loaded is not None
+    assert loaded.request.factor == "ROA"
+    assert loaded.request.tickers == ("bbb", " AAA ", "aaa")
+    assert fingerprint_request(loaded.request) == expected
 
+
+def test_persistence_roundtrip_fingerprint(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     db_path, strategy_path = _prepare(tmp_path, monkeypatch)
     strategy = load_strategy(strategy_path)
     request = strategy.to_backtest_request()

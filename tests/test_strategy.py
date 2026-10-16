@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from equitytrace.market.models import PriceAdjustmentMode
-from equitytrace.portfolio.models import PortfolioBaseline, PortfolioSchedule
+from equitytrace.portfolio.models import BacktestRequest, PortfolioBaseline, PortfolioSchedule
 from equitytrace.strategy.io import StrategyIOError, load_strategy, strategy_to_canonical_json
 from equitytrace.strategy.models import (
     ResearchStrategy,
@@ -221,6 +221,118 @@ def test_fingerprint_changes_for_economic_fields() -> None:
     left = fingerprint_strategy(_base(schedule="explicit", explicit_dates=["2024-01-02"]))
     right = fingerprint_strategy(_base(schedule="explicit", explicit_dates=["2024-01-03"]))
     assert left != right
+
+
+def test_direct_requests_share_canonical_fingerprint() -> None:
+    messy = BacktestRequest(
+        tickers=("msft", " AAPL ", "MSFT", "aapl"),
+        factor="fcf-yield",
+        top_n=1,
+        baseline=PortfolioBaseline.EQUAL_WEIGHT,
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        schedule=PortfolioSchedule.EXPLICIT,
+        explicit_dates=(date(2024, 1, 15), date(2024, 1, 2), date(2024, 1, 2)),
+        calendar_symbol="spy",
+        benchmark_symbol=" spy ",
+    )
+    clean = BacktestRequest(
+        tickers=("AAPL", "MSFT"),
+        factor="fcf_yield",
+        top_n=1,
+        baseline=PortfolioBaseline.EQUAL_WEIGHT,
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        schedule=PortfolioSchedule.EXPLICIT,
+        explicit_dates=(date(2024, 1, 2), date(2024, 1, 15)),
+        calendar_symbol="SPY",
+        benchmark_symbol="SPY",
+    )
+    assert messy.tickers != clean.tickers
+    assert messy.factor != clean.factor
+    assert fingerprint_request(messy) == fingerprint_request(clean)
+    assert fingerprint_request(messy) != fingerprint_request(clean.model_copy(update={"top_n": 2}))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        1704153600,
+        1704153600.0,
+        "2024-01-02T00:00:00",
+        "2024-01-02T00:00:00Z",
+        "2024-01-02T00:00:00+00:00",
+        "20240102",
+        "2024-W01-1",
+        "2024-02-31",
+        "2023-02-29",
+        datetime(2024, 1, 2),
+        datetime(2024, 1, 2, 0, 0),
+    ],
+)
+def test_strategy_dates_reject_non_calendar_forms(value: object) -> None:
+    with pytest.raises(ValidationError):
+        _base(start_date=value)
+    with pytest.raises(ValidationError):
+        _base(schedule="explicit", explicit_dates=[value])
+
+
+def test_strategy_dates_accept_calendar_dates() -> None:
+    leap = _base(start_date="2024-02-29", end_date="2024-03-01")
+    assert leap.start_date == date(2024, 2, 29)
+    assert leap.end_date == date(2024, 3, 1)
+    programmed = _base(start_date=date(2024, 1, 2), end_date=date(2024, 1, 31))
+    assert programmed.start_date == date(2024, 1, 2)
+    explicit = _base(
+        schedule="explicit",
+        explicit_dates=[date(2024, 1, 15), "2024-01-02"],
+    )
+    assert explicit.explicit_dates == (date(2024, 1, 2), date(2024, 1, 15))
+
+
+def test_strategy_json_rejects_unsafe_input(tmp_path: Path) -> None:
+    valid = {
+        "name": "File",
+        "tickers": ["bbb", "aaa"],
+        "factor": "roa",
+        "top_n": 1,
+        "baseline": "equal_weight",
+        "start_date": "2024-01-02",
+        "end_date": "2024-01-31",
+        "schedule": "monthly",
+    }
+    ok = tmp_path / "ok.json"
+    ok.write_text(json.dumps(valid), encoding="utf-8")
+    assert load_strategy(ok).tickers == ("AAA", "BBB")
+
+    invalid_utf8 = tmp_path / "bad-encoding.json"
+    invalid_utf8.write_bytes(b'{"name": "\xff"}')
+    with pytest.raises(StrategyIOError, match="UTF-8"):
+        load_strategy(invalid_utf8)
+
+    duplicate_root = tmp_path / "dup-root.json"
+    duplicate_root.write_text(
+        '{"name": "File", "factor": "roa", "factor": "fcf_yield", '
+        '"tickers": ["AAA"], "top_n": 1, "baseline": "equal_weight", '
+        '"start_date": "2024-01-02", "end_date": "2024-01-31", "schedule": "monthly"}',
+        encoding="utf-8",
+    )
+    with pytest.raises(StrategyIOError, match="Duplicate JSON key: factor"):
+        load_strategy(duplicate_root)
+
+    duplicate_nested = tmp_path / "dup-nested.json"
+    body = dict(valid)
+    duplicate_nested.write_text(
+        json.dumps(body)[:-1] + ', "notes": {"a": 1, "a": 2}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(StrategyIOError, match="Duplicate JSON key: a"):
+        load_strategy(duplicate_nested)
+
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{", encoding="utf-8")
+    with pytest.raises(StrategyIOError, match="Invalid JSON"):
+        load_strategy(malformed)
 
 
 def test_fingerprint_equals_request_helper() -> None:

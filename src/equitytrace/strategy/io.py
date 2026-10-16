@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -21,10 +22,14 @@ def load_strategy(path: Path) -> ResearchStrategy:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise StrategyIOError(f"Strategy file not found: {target}") from exc
+    except UnicodeDecodeError as exc:
+        raise StrategyIOError(f"Strategy file is not valid UTF-8: {target}") from exc
     except OSError as exc:
         raise StrategyIOError(f"Unable to read strategy file: {target}") from exc
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    except StrategyIOError:
+        raise
     except json.JSONDecodeError as exc:
         raise StrategyIOError(f"Invalid JSON in strategy file: {target}") from exc
     if not isinstance(payload, dict):
@@ -44,6 +49,16 @@ def strategy_to_canonical_json(strategy: ResearchStrategy) -> str:
 def save_strategy(path: Path, strategy: ResearchStrategy) -> None:
     """Write a strategy as canonical UTF-8 JSON."""
     Path(path).write_text(strategy_to_canonical_json(strategy), encoding="utf-8")
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Build one JSON object and reject repeated keys at this level."""
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise StrategyIOError(f"Duplicate JSON key: {key}")
+        payload[key] = value
+    return payload
 
 
 def _format_validation(exc: ValidationError) -> str:
