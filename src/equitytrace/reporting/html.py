@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import json
 import math
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from equitytrace.factors.registry import UnknownFactorError, get_factor
@@ -90,10 +90,25 @@ def _fmt_pct(value: float | None, *, digits: int = 4) -> str:
     return _esc(f"{value * 100:.{digits}f}%")
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Normalize a persisted datetime to UTC without host-local conversion.
+
+    Naive values are treated as already-UTC stored timestamps.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _fmt_ts(value: datetime | None) -> str:
+    """Render a persisted timestamp as explicit UTC ISO-8601 text.
+
+    Host local timezone must not affect the output.
+    """
     if value is None:
         return "Unavailable"
-    return _esc(value.astimezone().isoformat() if value.tzinfo else value.isoformat())
+    # Stable canonical form: always ``...+00:00``, never local offsets.
+    return _esc(_as_utc(value).isoformat())
 
 
 def _fmt_date(value: date | None) -> str:
@@ -188,27 +203,34 @@ def _ranking_direction(factor: str) -> str | None:
 
 def _section_performance(result: BacktestResult, *, success: bool) -> str:
     if not success:
+        # Do not render default zero turnover/cost/count cards as completed
+        # research performance. Stored metrics remain available in JSON export.
         return _section(
             "Performance summary",
-            '<p class="muted">Performance metrics are not shown as success '
-            f"values because research status is <strong>{_esc(result.status.value)}"
-            "</strong>.</p>" + _metrics_table(result.metrics, result.final_nav, allow_display=True),
+            '<p class="data-unavailable">Performance metrics are unavailable '
+            "for this non-successful research result "
+            f"(status=<strong>{_esc(result.status.value)}</strong>"
+            + (
+                f", failure_reason=<code>{_esc(result.failure_reason)}</code>"
+                if result.failure_reason
+                else ""
+            )
+            + "). Default zero fields on a terminal failure/unavailable record "
+            "are not completed-research performance. Diagnostic evidence below "
+            "(warnings, audit, rebalances) remains visible; full stored values "
+            "are preserved in JSON export.</p>",
         )
     return _section(
         "Performance summary",
         "<p>Values below are exactly the persisted metrics for this run.</p>"
-        + _metrics_table(result.metrics, result.final_nav, allow_display=True),
+        + _metrics_table(result.metrics, result.final_nav),
     )
 
 
 def _metrics_table(
     metrics: PerformanceMetrics | None,
     final_nav: float | None,
-    *,
-    allow_display: bool,
 ) -> str:
-    if not allow_display:
-        return '<p class="muted">Unavailable</p>'
     if metrics is None and final_nav is None:
         return '<p class="muted">No persisted metrics for this run.</p>'
     rows = [
@@ -309,20 +331,66 @@ def _downsample(points: list[EquityPoint], limit: int) -> list[EquityPoint]:
     return unique
 
 
+def _finite_segments(
+    values: list[float | None],
+) -> list[list[tuple[int, float]]]:
+    """Split a series into contiguous finite segments; gaps stay unconnected."""
+    segments: list[list[tuple[int, float]]] = []
+    current: list[tuple[int, float]] = []
+    for index, value in enumerate(values):
+        if value is not None and math.isfinite(value):
+            current.append((index, float(value)))
+            continue
+        if current:
+            segments.append(current)
+            current = []
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _series_polyline(
+    segment: list[tuple[int, float]],
+    x_at: Any,
+    y_at: Any,
+    *,
+    stroke: str,
+    stroke_width: str,
+    dash: str | None = None,
+) -> str:
+    if len(segment) == 1:
+        index, value = segment[0]
+        return f'<circle cx="{x_at(index):.2f}" cy="{y_at(value):.2f}" r="2.5" fill="{stroke}"/>'
+    points = " ".join(f"{x_at(i):.2f},{y_at(v):.2f}" for i, v in segment)
+    dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
+    return (
+        f'<polyline fill="none" stroke="{stroke}" stroke-width="{stroke_width}"'
+        f'{dash_attr} points="{points}"/>'
+    )
+
+
 def _nav_chart(points: list[EquityPoint]) -> str:
-    finite = [p for p in points if math.isfinite(p.nav)]
-    if not finite:
+    if not points:
         return '<p class="data-unavailable">NAV chart data unavailable.</p>'
+    # X axis is trading-session sequence index (not elapsed calendar time).
+    # Missing/nonfinite NAV values split the line; they are never connected.
+    nav_values: list[float | None] = [
+        point.nav if math.isfinite(point.nav) else None for point in points
+    ]
+    bench_values: list[float | None] = [
+        point.benchmark_nav
+        if point.benchmark_nav is not None and math.isfinite(point.benchmark_nav)
+        else None
+        for point in points
+    ]
+    nav_segments = _finite_segments(nav_values)
+    bench_segments = _finite_segments(bench_values)
+    if not nav_segments and not bench_segments:
+        return '<p class="data-unavailable">NAV chart data unavailable.</p>'
+
     width, height = 860, 320
-    pad_l, pad_r, pad_t, pad_b = 56, 20, 24, 48
-    xs = list(range(len(finite)))
-    navs = [p.nav for p in finite]
-    bench_pairs: list[tuple[int, float]] = []
-    for index, point in enumerate(finite):
-        if point.benchmark_nav is not None and math.isfinite(point.benchmark_nav):
-            bench_pairs.append((index, point.benchmark_nav))
-    y_vals = list(navs)
-    y_vals.extend(value for _, value in bench_pairs)
+    pad_l, pad_r, pad_t, pad_b = 56, 20, 36, 48
+    y_vals = [value for segment in nav_segments + bench_segments for _, value in segment]
     y_min = min(y_vals)
     y_max = max(y_vals)
     if y_min == y_max:
@@ -330,16 +398,16 @@ def _nav_chart(points: list[EquityPoint]) -> str:
         y_max += abs(y_max) * 0.01 + 1e-9
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
+    n = len(points)
 
     def x_at(index: int) -> float:
-        if len(finite) == 1:
+        if n == 1:
             return pad_l + plot_w / 2.0
-        return pad_l + plot_w * (index / (len(finite) - 1))
+        return pad_l + plot_w * (index / (n - 1))
 
     def y_at(value: float) -> float:
         return pad_t + plot_h * (1.0 - (value - y_min) / (y_max - y_min))
 
-    nav_poly = " ".join(f"{x_at(i):.2f},{y_at(v):.2f}" for i, v in enumerate(navs))
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'role="img" aria-label="Portfolio and benchmark NAV">'
@@ -348,18 +416,21 @@ def _nav_chart(points: list[EquityPoint]) -> str:
         f'stroke="#c8c8c4" stroke-width="1"/>'
         f'<line x1="{pad_l}" y1="{height - pad_b}" x2="{width - pad_r}" '
         f'y2="{height - pad_b}" stroke="#c8c8c4" stroke-width="1"/>'
-        f'<polyline fill="none" stroke="#1f4e79" stroke-width="2" points="{nav_poly}"/>'
     ]
-    if bench_pairs:
-        # Draw only contiguous segments with actual stored benchmark values.
-        segment: list[tuple[int, float]] = []
-        for index, value in bench_pairs:
-            if segment and index != segment[-1][0] + 1:
-                parts.append(_bench_polyline(segment, x_at, y_at))
-                segment = []
-            segment.append((index, value))
-        if segment:
-            parts.append(_bench_polyline(segment, x_at, y_at))
+    for segment in nav_segments:
+        parts.append(_series_polyline(segment, x_at, y_at, stroke="#1f4e79", stroke_width="2"))
+    for segment in bench_segments:
+        parts.append(
+            _series_polyline(
+                segment,
+                x_at,
+                y_at,
+                stroke="#6b7280",
+                stroke_width="1.5",
+                dash="4 3",
+            )
+        )
+    if bench_segments:
         legend = (
             f'<text x="{pad_l}" y="16" font-size="12" fill="#1f4e79">'
             "Portfolio NAV</text>"
@@ -375,12 +446,18 @@ def _nav_chart(points: list[EquityPoint]) -> str:
         )
     parts.append(legend)
     parts.append(
+        f'<text x="{pad_l}" y="{height - 28}" font-size="11" fill="#555">'
+        "Horizontal axis: trading-session sequence (gaps are unconnected)</text>"
+    )
+    first_date = _as_utc(points[0].valuation_at).date().isoformat()
+    last_date = _as_utc(points[-1].valuation_at).date().isoformat()
+    parts.append(
         f'<text x="{pad_l}" y="{height - 12}" font-size="11" fill="#555">'
-        f"{_esc(finite[0].valuation_at.date().isoformat())}</text>"
+        f"session 0 · {_esc(first_date)}</text>"
     )
     parts.append(
         f'<text x="{width - pad_r}" y="{height - 12}" font-size="11" fill="#555" '
-        f'text-anchor="end">{_esc(finite[-1].valuation_at.date().isoformat())}</text>'
+        f'text-anchor="end">session {n - 1} · {_esc(last_date)}</text>'
     )
     parts.append(
         f'<text x="8" y="{pad_t + 4}" font-size="11" fill="#555">{_esc(f"{y_max:.6g}")}</text>'
@@ -389,52 +466,40 @@ def _nav_chart(points: list[EquityPoint]) -> str:
         f'<text x="8" y="{height - pad_b}" font-size="11" fill="#555">{_esc(f"{y_min:.6g}")}</text>'
     )
     parts.append("</svg>")
-    # xs kept for potential future axis ticks; silence unused lint by referencing.
-    _ = xs
     return "".join(parts)
 
 
-def _bench_polyline(
-    segment: list[tuple[int, float]],
-    x_at: Any,
-    y_at: Any,
-) -> str:
-    if len(segment) == 1:
-        index, value = segment[0]
-        return f'<circle cx="{x_at(index):.2f}" cy="{y_at(value):.2f}" r="2.5" fill="#6b7280"/>'
-    points = " ".join(f"{x_at(i):.2f},{y_at(v):.2f}" for i, v in segment)
-    return (
-        f'<polyline fill="none" stroke="#6b7280" stroke-width="1.5" '
-        f'stroke-dasharray="4 3" points="{points}"/>'
-    )
-
-
 def _drawdown_chart(points: list[EquityPoint]) -> str:
-    finite = [p for p in points if math.isfinite(p.drawdown)]
-    if not finite:
+    if not points:
+        return '<p class="data-unavailable">Drawdown chart data unavailable.</p>'
+    values: list[float | None] = [
+        point.drawdown if math.isfinite(point.drawdown) else None for point in points
+    ]
+    segments = _finite_segments(values)
+    if not segments:
         return '<p class="data-unavailable">Drawdown chart data unavailable.</p>'
     width, height = 860, 280
-    pad_l, pad_r, pad_t, pad_b = 56, 20, 24, 48
-    values = [p.drawdown for p in finite]
-    y_min = min(min(values), 0.0)
-    y_max = max(max(values), 0.0)
+    pad_l, pad_r, pad_t, pad_b = 56, 20, 36, 48
+    finite_vals = [value for segment in segments for _, value in segment]
+    y_min = min(min(finite_vals), 0.0)
+    y_max = max(max(finite_vals), 0.0)
     if y_min == y_max:
         y_min -= 0.01
         y_max += 0.01
     plot_w = width - pad_l - pad_r
     plot_h = height - pad_t - pad_b
+    n = len(points)
 
     def x_at(index: int) -> float:
-        if len(finite) == 1:
+        if n == 1:
             return pad_l + plot_w / 2.0
-        return pad_l + plot_w * (index / (len(finite) - 1))
+        return pad_l + plot_w * (index / (n - 1))
 
     def y_at(value: float) -> float:
         return pad_t + plot_h * (1.0 - (value - y_min) / (y_max - y_min))
 
-    poly = " ".join(f"{x_at(i):.2f},{y_at(v):.2f}" for i, v in enumerate(values))
     zero_y = y_at(0.0)
-    return (
+    parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
         f'role="img" aria-label="Portfolio drawdown">'
         f'<rect x="0" y="0" width="{width}" height="{height}" fill="#fbfbfa"/>'
@@ -444,19 +509,34 @@ def _drawdown_chart(points: list[EquityPoint]) -> str:
         f'y2="{height - pad_b}" stroke="#c8c8c4" stroke-width="1"/>'
         f'<line x1="{pad_l}" y1="{zero_y:.2f}" x2="{width - pad_r}" '
         f'y2="{zero_y:.2f}" stroke="#d0d0cc" stroke-width="1" stroke-dasharray="3 3"/>'
-        f'<polyline fill="none" stroke="#8b3a3a" stroke-width="2" points="{poly}"/>'
-        f'<text x="{pad_l}" y="16" font-size="12" fill="#8b3a3a">'
-        "Drawdown (signed)</text>"
+    ]
+    for segment in segments:
+        parts.append(_series_polyline(segment, x_at, y_at, stroke="#8b3a3a", stroke_width="2"))
+    first_date = _as_utc(points[0].valuation_at).date().isoformat()
+    last_date = _as_utc(points[-1].valuation_at).date().isoformat()
+    parts.append(f'<text x="{pad_l}" y="16" font-size="12" fill="#8b3a3a">Drawdown (signed)</text>')
+    parts.append(
+        f'<text x="{pad_l}" y="{height - 28}" font-size="11" fill="#555">'
+        "Horizontal axis: trading-session sequence (gaps are unconnected)</text>"
+    )
+    parts.append(
         f'<text x="{pad_l}" y="{height - 12}" font-size="11" fill="#555">'
-        f"{_esc(finite[0].valuation_at.date().isoformat())}</text>"
+        f"session 0 · {_esc(first_date)}</text>"
+    )
+    parts.append(
         f'<text x="{width - pad_r}" y="{height - 12}" font-size="11" fill="#555" '
-        f'text-anchor="end">{_esc(finite[-1].valuation_at.date().isoformat())}</text>'
+        f'text-anchor="end">session {n - 1} · {_esc(last_date)}</text>'
+    )
+    parts.append(
         f'<text x="8" y="{pad_t + 4}" font-size="11" fill="#555">'
         f"{_esc(f'{y_max * 100:.2f}%')}</text>"
+    )
+    parts.append(
         f'<text x="8" y="{height - pad_b}" font-size="11" fill="#555">'
         f"{_esc(f'{y_min * 100:.2f}%')}</text>"
-        "</svg>"
     )
+    parts.append("</svg>")
+    return "".join(parts)
 
 
 def _section_rebalances(result: BacktestResult) -> str:

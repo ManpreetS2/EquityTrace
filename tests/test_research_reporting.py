@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -220,6 +222,12 @@ def test_unavailable_and_failed_reports_do_not_imply_success() -> None:
         failure_reason="factor_universe_too_small",
         warnings=(ADJUSTED_HISTORY_WARNING,),
         audit=LeakageAuditResult(passed=True, failures=()),
+        metrics=PerformanceMetrics(
+            gross_turnover=0.0,
+            transaction_cost_total=0.0,
+            successful_rebalance_count=0,
+        ),
+        final_nav=None,
     )
     failed = _crafted_result(
         status=PortfolioRunStatus.FAILED,
@@ -227,7 +235,11 @@ def test_unavailable_and_failed_reports_do_not_imply_success() -> None:
         warnings=(SURVIVORSHIP_WARNING,),
         audit=LeakageAuditResult(passed=False, failures=("future_signal",)),
         equity=(),
-        metrics=None,
+        metrics=PerformanceMetrics(
+            gross_turnover=0.0,
+            transaction_cost_total=0.0,
+            successful_rebalance_count=0,
+        ),
         final_nav=None,
     )
     html_u = render_research_report(unavail)
@@ -236,14 +248,20 @@ def test_unavailable_and_failed_reports_do_not_imply_success() -> None:
     assert "Research status: SUCCESS" not in html_u
     assert "factor_universe_too_small" in html_u
     assert ADJUSTED_HISTORY_WARNING in html_u
+    assert "Performance metrics are unavailable for this non-successful" in html_u
+    assert 'class="metric-grid"' not in html_u
+    assert 'class="metric-card"' not in html_u
+    assert "Final NAV" not in html_u
     assert "Research status: FAILED" in html_f
     assert "Research status: SUCCESS" not in html_f
     assert "leakage_detected" in html_f
     assert "future_signal" in html_f
     assert "Audit passed: <strong>False</strong>" in html_f
-    # Null metrics must not be rendered as zero success cards implying completion.
-    assert "0.0000%" not in html_f or "Unavailable" in html_f
-    assert "no persisted equity points" in html_f or "Charts unavailable" in html_f
+    assert "Performance metrics are unavailable for this non-successful" in html_f
+    assert 'class="metric-grid"' not in html_f
+    assert 'class="metric-card"' not in html_f
+    assert "0.0000%" not in html_f
+    assert "no persisted equity points" in html_f
 
 
 def test_malicious_strings_are_escaped() -> None:
@@ -587,10 +605,12 @@ def test_null_metrics_show_unavailable_not_zero() -> None:
         final_nav=None,
     )
     html = render_research_report(result)
-    assert "Unavailable" in html
-    assert "Final NAV" in html
-    # Explicit null performance fields must not become 0.0000% success figures.
-    assert html.count("0.0000%") == 0
+    assert "Performance metrics are unavailable for this non-successful" in html
+    assert 'class="metric-grid"' not in html
+    assert 'class="metric-card"' not in html
+    assert "Final NAV" not in html
+    assert "0.0000%" not in html
+    assert "Gross turnover" not in html
 
 
 def test_report_determinism_under_hash_seed(
@@ -602,3 +622,167 @@ def test_report_determinism_under_hash_seed(
     assert render_research_report(loaded) == render_research_report(loaded)
     assert render_request_export(loaded) == render_request_export(loaded)
     assert render_result_export(loaded) == render_result_export(loaded)
+
+
+def test_timestamps_are_utc_and_timezone_independent(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    import time
+
+    _db_path, loaded = _run_success(tmp_path, monkeypatch)
+    expected_created = loaded.created_at.astimezone(UTC).isoformat()
+    assert expected_created.endswith("+00:00")
+
+    html_default = render_research_report(loaded)
+    assert expected_created in html_default
+
+    previous_tz = os.environ.get("TZ")
+    try:
+        monkeypatch.setenv("TZ", "America/Los_Angeles")
+        time.tzset()
+        html_west = render_research_report(loaded)
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+        html_east = render_research_report(loaded)
+        monkeypatch.setenv("TZ", "UTC")
+        time.tzset()
+        html_utc = render_research_report(loaded)
+    finally:
+        if previous_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous_tz
+        time.tzset()
+
+    assert html_west == html_east == html_utc == html_default
+    assert expected_created in html_west
+    assert "-07:00" not in html_west
+    assert "-08:00" not in html_west
+    assert "+09:00" not in html_west
+    # Decision timestamps in the rebalance table also stay UTC.
+    assert loaded.rebalances
+    decision = loaded.rebalances[0].decision_at.astimezone(UTC).isoformat()
+    assert decision.endswith("+00:00")
+    assert decision in html_west
+
+
+def test_persisted_failed_and_unavailable_reports(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    from helpers.portfolio_fixtures import explicit_request, run_backtest
+
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    clear_settings_cache()
+
+    fail_db_path = tmp_path / "persisted-fail.duckdb"
+    fail_db = initialize_database(fail_db_path)
+    _seed_two_name_path(fail_db, skip_bbb=D2)
+    failed = run_backtest(
+        fail_db,
+        explicit_request(("AAA", "BBB"), start=D0, end=D3, decisions=(D0,), top_n=2),
+    )
+    assert failed.status is PortfolioRunStatus.FAILED
+    assert failed.failure_reason == "held_return_missing"
+    with fail_db.session(read_only=True) as conn:
+        loaded_fail = PortfolioRepository(conn).get_run(failed.run_id)
+    assert loaded_fail is not None
+    html_fail = render_research_report(loaded_fail)
+    assert "Research status: FAILED" in html_fail
+    assert "Research status: SUCCESS" not in html_fail
+    assert "held_return_missing" in html_fail
+    assert "Performance metrics are unavailable for this non-successful" in html_fail
+    assert 'class="metric-grid"' not in html_fail
+    assert 'class="metric-card"' not in html_fail
+    assert "Gross turnover" not in html_fail
+    assert ADJUSTED_HISTORY_WARNING in html_fail
+    # JSON export still preserves the stored metrics object (including zeros).
+    export_payload = json.loads(render_result_export(loaded_fail))
+    assert export_payload["result"]["status"] == "failed"
+    assert export_payload["result"]["failure_reason"] == "held_return_missing"
+    assert export_payload["result"]["metrics"] is not None
+    assert export_payload["result"]["metrics"]["gross_turnover"] == 0.0
+
+    unavail_db = initialize_database(tmp_path / "persisted-unavail.duckdb")
+    _seed_two_name_path(unavail_db)
+    unavailable = run_backtest(
+        unavail_db,
+        explicit_request(("AAA",), start=D0, end=D3, decisions=(D0,), top_n=2),
+    )
+    assert unavailable.status is PortfolioRunStatus.UNAVAILABLE
+    assert unavailable.failure_reason == "factor_universe_too_small"
+    with unavail_db.session(read_only=True) as conn:
+        loaded_unavail = PortfolioRepository(conn).get_run(unavailable.run_id)
+    assert loaded_unavail is not None
+    html_u = render_research_report(loaded_unavail)
+    assert "Research status: UNAVAILABLE" in html_u
+    assert "Research status: SUCCESS" not in html_u
+    assert "factor_universe_too_small" in html_u
+    assert "Performance metrics are unavailable for this non-successful" in html_u
+    assert 'class="metric-grid"' not in html_u
+    assert 'class="metric-card"' not in html_u
+
+
+def test_chart_gaps_do_not_connect_missing_observations() -> None:
+    equity = (
+        EquityPoint(
+            valuation_at=datetime(2024, 1, 2, 21, 15, tzinfo=UTC),
+            nav=1.0,
+            cash_weight=0.0,
+            drawdown=0.0,
+            benchmark_nav=100.0,
+        ),
+        EquityPoint(
+            valuation_at=datetime(2024, 1, 3, 21, 15, tzinfo=UTC),
+            nav=float("nan"),
+            cash_weight=0.0,
+            drawdown=float("nan"),
+            benchmark_nav=None,
+        ),
+        EquityPoint(
+            valuation_at=datetime(2024, 1, 4, 21, 15, tzinfo=UTC),
+            nav=1.05,
+            cash_weight=0.0,
+            drawdown=-0.01,
+            benchmark_nav=102.0,
+        ),
+        EquityPoint(
+            valuation_at=datetime(2024, 1, 5, 21, 15, tzinfo=UTC),
+            nav=1.06,
+            cash_weight=0.0,
+            drawdown=-0.02,
+            benchmark_nav=float("inf"),
+        ),
+    )
+    result = _crafted_result(
+        status=PortfolioRunStatus.SUCCESS,
+        final_nav=1.06,
+        metrics=PerformanceMetrics(successful_rebalance_count=1),
+        equity=equity,
+    )
+    html = render_research_report(result)
+    assert "trading-session sequence" in html
+    assert "gaps are unconnected" in html
+    # Portfolio NAV: finite sessions 0 and 2-3 => one circle + one polyline.
+    # A single continuous polyline would incorrectly bridge the NaN gap.
+    nav_section_start = html.index('aria-label="Portfolio and benchmark NAV"')
+    nav_section_end = html.index("</svg>", nav_section_start) + len("</svg>")
+    nav_svg = html[nav_section_start:nav_section_end]
+    portfolio_polylines = re.findall(r"<polyline[^>]*stroke=\"#1f4e79\"[^>]*>", nav_svg)
+    portfolio_circles = re.findall(r"<circle[^>]*fill=\"#1f4e79\"[^>]*>", nav_svg)
+    assert len(portfolio_polylines) + len(portfolio_circles) == 2
+    # Benchmark: sessions 0 and 2 only (None and +inf are gaps) => two circles.
+    bench_polylines = re.findall(r"<polyline[^>]*stroke=\"#6b7280\"[^>]*>", nav_svg)
+    bench_circles = re.findall(r"<circle[^>]*fill=\"#6b7280\"[^>]*>", nav_svg)
+    assert len(bench_polylines) + len(bench_circles) == 2
+    assert len(bench_circles) == 2
+    # No invented forward-filled benchmark mid-gap point.
+    assert "101" not in nav_svg
+    # Drawdown also splits at the NaN observation.
+    dd_start = html.index('aria-label="Portfolio drawdown"')
+    dd_end = html.index("</svg>", dd_start) + len("</svg>")
+    dd_svg = html[dd_start:dd_end]
+    dd_polylines = re.findall(r"<polyline[^>]*stroke=\"#8b3a3a\"[^>]*>", dd_svg)
+    dd_circles = re.findall(r"<circle[^>]*fill=\"#8b3a3a\"[^>]*>", dd_svg)
+    assert len(dd_polylines) + len(dd_circles) == 2
