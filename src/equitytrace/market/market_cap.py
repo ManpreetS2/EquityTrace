@@ -13,6 +13,7 @@ from equitytrace.market.models import (
     PriceAdjustmentMode,
 )
 from equitytrace.market.shares import SharesOutstandingService
+from equitytrace.market.splits import reconcile_share_basis
 from equitytrace.repositories.market import MarketRepository
 
 
@@ -26,7 +27,7 @@ DEFAULT_MAX_PRICE_STALENESS_DAYS = 7
 
 
 class MarketCapService:
-    """Compute market cap from raw close * point-in-time shares outstanding."""
+    """Compute market cap from raw close * split-reconciled PIT shares outstanding."""
 
     def __init__(self, conn: duckdb.DuckDBPyConnection) -> None:
         self._conn = conn
@@ -157,7 +158,7 @@ class MarketCapService:
             knowledge_time=knowledge_time,
         )
         warnings.extend(shares.warnings)
-        if not shares.is_available or shares.shares is None:
+        if not shares.is_available or shares.shares is None or shares.fact_date is None:
             return MarketCapResult(
                 ticker=symbol,
                 market_date_requested=market_date,
@@ -172,7 +173,56 @@ class MarketCapService:
                 warnings=tuple(dict.fromkeys(warnings)),
             )
 
-        market_cap = price.close * shares.shares
+        coverage = self._repo.get_verified_split_coverage(
+            instrument.instrument_id,
+            shares_fact_date=shares.fact_date,
+            price_date=price.trading_date,
+            provider=price.provider,
+        )
+        events = self._repo.list_stock_split_events(
+            instrument.instrument_id,
+            start_date=shares.fact_date,
+            end_date=price.trading_date,
+            provider=price.provider,
+            # Load candidates; reconcile_share_basis applies available_at <= knowledge.
+            as_of=None,
+        )
+        reconciliation = reconcile_share_basis(
+            original_shares=shares.shares,
+            shares_fact_date=shares.fact_date,
+            price_date=price.trading_date,
+            knowledge_time=knowledge_time,
+            coverage=coverage,
+            events=events,
+        )
+        warnings.extend(reconciliation.warnings)
+
+        if not reconciliation.is_available:
+            return MarketCapResult(
+                ticker=symbol,
+                market_date_requested=market_date,
+                price_date_used=price.trading_date,
+                knowledge_time=knowledge_time,
+                raw_close=price.close,
+                currency=price.currency,
+                shares_outstanding=shares.shares,
+                shares_fact_date=shares.fact_date,
+                shares_available_at=shares.available_at,
+                reconciled_shares_outstanding=None,
+                split_share_multiplier=None,
+                split_event_ids=(),
+                split_coverage_id=coverage.coverage_id if coverage is not None else None,
+                price_provider=price.provider,
+                price_adjustment_mode=PriceAdjustmentMode.NONE,
+                price_fetched_at=price.fetched_at,
+                sec_concept=shares.concept,
+                sec_accession=shares.accession_number,
+                sec_form=shares.form,
+                unavailable_reason=reconciliation.unavailable_reason,
+                warnings=tuple(dict.fromkeys(warnings)),
+            )
+
+        market_cap = price.close * reconciliation.reconciled_shares
         return MarketCapResult(
             ticker=symbol,
             market_date_requested=market_date,
@@ -183,6 +233,12 @@ class MarketCapService:
             shares_outstanding=shares.shares,
             shares_fact_date=shares.fact_date,
             shares_available_at=shares.available_at,
+            reconciled_shares_outstanding=reconciliation.reconciled_shares,
+            split_share_multiplier=reconciliation.share_multiplier,
+            split_event_ids=tuple(event.event_id for event in reconciliation.events),
+            split_coverage_id=(
+                reconciliation.coverage.coverage_id if reconciliation.coverage is not None else None
+            ),
             market_cap=market_cap,
             price_provider=price.provider,
             price_adjustment_mode=PriceAdjustmentMode.NONE,

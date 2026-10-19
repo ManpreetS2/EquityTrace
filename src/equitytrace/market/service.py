@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import duckdb
 
 from equitytrace.config import Settings
-from equitytrace.market.availability import bar_available_at
+from equitytrace.market.availability import bar_available_at, modeled_split_available_at
 from equitytrace.market.models import (
     AssetType,
     DailyBarsResponse,
@@ -18,11 +18,22 @@ from equitytrace.market.models import (
     MarketDataRunStatus,
     MarketSymbolMapping,
     PriceAdjustmentMode,
+    SplitCoverageStatus,
+    SplitIngestionResult,
     metadata_json,
 )
 from equitytrace.market.providers.base import MarketDataProvider
-from equitytrace.market.providers.errors import MarketDataError, MarketDataValidationError
-from equitytrace.market.providers.twelve_data import TwelveDataProvider, validate_ohlcv
+from equitytrace.market.providers.errors import (
+    MarketDataAuthError,
+    MarketDataError,
+    MarketDataValidationError,
+)
+from equitytrace.market.providers.twelve_data import (
+    SPLITS_COVERAGE_BASIS,
+    SPLITS_COVERAGE_LIMITATIONS,
+    TwelveDataProvider,
+    validate_ohlcv,
+)
 from equitytrace.models import utc_now
 from equitytrace.repositories.market import MarketRepository
 from equitytrace.repositories.securities import SecuritiesRepository
@@ -516,6 +527,245 @@ class MarketDataService:
             # by an adjacent same-symbol mapping with no gap.
             cursor = current.valid_to + timedelta(days=1)
         return symbol
+
+    def ingest_splits(
+        self,
+        symbol: str,
+        *,
+        start_date: date,
+        end_date: date,
+        asset_type: AssetType = AssetType.EQUITY,
+        provider_name: MarketDataProviderName | None = None,
+        provider_symbol: str | None = None,
+    ) -> SplitIngestionResult:
+        """Ingest verified stock-split events and coverage for a bounded interval.
+
+        Does not run during factor calculation. Requires an explicit call. On
+        provider failure, no verified coverage is written (fail closed).
+        """
+        if start_date > end_date:
+            raise MarketDataError(f"start_date {start_date} is after end_date {end_date}.")
+
+        provider_enum_name = (
+            (provider_name.value if provider_name else self._settings.market_data_provider)
+            .strip()
+            .lower()
+        )
+        try:
+            provider_enum = MarketDataProviderName(provider_enum_name)
+        except ValueError as exc:
+            raise MarketDataError(
+                f"Unsupported market-data provider '{provider_enum_name}'. "
+                f"v0.3a supports '{MarketDataProviderName.TWELVE_DATA.value}'."
+            ) from exc
+
+        provider, owns_provider = self._resolve_provider(provider_name)
+        try:
+            return self._ingest_splits_with_provider(
+                provider=provider,
+                provider_enum=provider_enum,
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                asset_type=asset_type,
+                provider_symbol=provider_symbol,
+            )
+        finally:
+            if owns_provider:
+                self._close_owned_provider(provider)
+
+    def _ingest_splits_with_provider(
+        self,
+        *,
+        provider: MarketDataProvider,
+        provider_enum: MarketDataProviderName,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+        asset_type: AssetType,
+        provider_symbol: str | None,
+    ) -> SplitIngestionResult:
+        fetch_splits = getattr(provider, "fetch_splits", None)
+        if not callable(fetch_splits):
+            raise MarketDataError(
+                f"Provider '{provider_enum.value}' does not support stock-split ingestion."
+            )
+
+        security_ticker: str | None = None
+        issuer_cik: str | None = None
+        exchange: str | None = None
+        if asset_type is AssetType.EQUITY:
+            matches = self._securities.get_by_ticker(symbol)
+            if matches:
+                ciks = {m.cik for m in matches}
+                if len(ciks) > 1:
+                    raise MarketDataError(
+                        f"Ambiguous security match for {symbol.strip().upper()}: "
+                        f"multiple CIKs {', '.join(sorted(ciks))}."
+                    )
+                primary = next((m for m in matches if m.is_primary), matches[0])
+                security_ticker = primary.ticker
+                issuer_cik = primary.cik
+                exchange = primary.exchange
+
+        try:
+            instrument = self._repo.get_or_create_instrument(
+                symbol,
+                asset_type=asset_type,
+                security_ticker=security_ticker,
+                issuer_cik=issuer_cik,
+                exchange=exchange,
+            )
+        except ValueError as exc:
+            raise MarketDataError(str(exc)) from exc
+
+        resolved_provider_symbol = self._resolve_provider_symbol(
+            instrument_id=instrument.instrument_id,
+            provider=provider_enum,
+            canonical_symbol=instrument.canonical_symbol,
+            start_date=start_date,
+            end_date=end_date,
+            explicit_provider_symbol=provider_symbol,
+        )
+
+        run_id = self._repo.create_market_data_run(
+            provider=provider_enum,
+            instrument_id=instrument.instrument_id,
+            requested_start_date=start_date,
+            requested_end_date=end_date,
+            adjustment_modes=[],
+        )
+        warnings: list[str] = [
+            "split_history_retrospectively_retrieved_not_vendor_vintage_pit",
+            "split_available_at_modeled_eod_convention",
+        ]
+        try:
+            response = fetch_splits(resolved_provider_symbol, start_date, end_date)
+        except MarketDataAuthError as exc:
+            self._repo.complete_market_data_run(
+                run_id,
+                status=MarketDataRunStatus.FAILED,
+                error_summary=str(exc),
+            )
+            return SplitIngestionResult(
+                run_id=run_id,
+                provider=provider_enum,
+                instrument_id=instrument.instrument_id,
+                canonical_symbol=instrument.canonical_symbol,
+                provider_symbol=resolved_provider_symbol,
+                requested_start_date=start_date,
+                requested_end_date=end_date,
+                status=MarketDataRunStatus.FAILED,
+                error_summary=str(exc),
+                warnings=tuple(warnings),
+            )
+        except MarketDataError as exc:
+            self._repo.complete_market_data_run(
+                run_id,
+                status=MarketDataRunStatus.FAILED,
+                error_summary=str(exc),
+            )
+            return SplitIngestionResult(
+                run_id=run_id,
+                provider=provider_enum,
+                instrument_id=instrument.instrument_id,
+                canonical_symbol=instrument.canonical_symbol,
+                provider_symbol=resolved_provider_symbol,
+                requested_start_date=start_date,
+                requested_end_date=end_date,
+                status=MarketDataRunStatus.FAILED,
+                error_summary=str(exc),
+                warnings=tuple(warnings),
+            )
+
+        if response.malformed_row_count:
+            warnings.append(f"malformed_split_rows:{response.malformed_row_count}")
+        if response.duplicate_row_count:
+            warnings.append(f"duplicate_split_rows:{response.duplicate_row_count}")
+
+        retrieved_at = utc_now()
+        inserted = updated = unchanged = 0
+        rejected = response.malformed_row_count
+        for event in response.events:
+            try:
+                available_at = modeled_split_available_at(
+                    event.effective_date,
+                    response.exchange_timezone,
+                )
+            except MarketDataValidationError:
+                rejected += 1
+                continue
+            stored = self._repo.build_stock_split_event(
+                instrument_id=instrument.instrument_id,
+                provider=provider_enum,
+                provider_symbol=resolved_provider_symbol,
+                effective_date=event.effective_date,
+                from_factor=event.from_factor,
+                to_factor=event.to_factor,
+                share_multiplier=event.share_multiplier,
+                source_ratio=event.source_ratio,
+                description=event.description,
+                available_at=available_at,
+                retrieved_at=retrieved_at,
+                source_metadata=event.metadata,
+            )
+            outcome = self._repo.upsert_stock_split_event(stored)
+            if outcome == "inserted":
+                inserted += 1
+            elif outcome == "updated":
+                updated += 1
+            else:
+                unchanged += 1
+
+        coverage = self._repo.build_stock_split_coverage(
+            instrument_id=instrument.instrument_id,
+            provider=provider_enum,
+            provider_symbol=resolved_provider_symbol,
+            coverage_start=start_date,
+            coverage_end=end_date,
+            status=SplitCoverageStatus.VERIFIED,
+            completeness_basis=SPLITS_COVERAGE_BASIS,
+            limitations=SPLITS_COVERAGE_LIMITATIONS,
+            retrieved_at=retrieved_at,
+            source_metadata={
+                "event_count": len(response.events),
+                "meta": response.meta,
+            },
+        )
+        self._repo.upsert_stock_split_coverage(coverage)
+        status = MarketDataRunStatus.SUCCESS
+        if rejected and (inserted + updated + unchanged) == 0 and response.events:
+            status = MarketDataRunStatus.FAILED
+        elif rejected:
+            status = MarketDataRunStatus.PARTIAL
+
+        self._repo.complete_market_data_run(
+            run_id,
+            status=status,
+            raw_row_count=len(response.events) + response.malformed_row_count,
+            inserted_row_count=inserted,
+            updated_row_count=updated,
+            unchanged_row_count=unchanged,
+            rejected_row_count=rejected,
+        )
+        return SplitIngestionResult(
+            run_id=run_id,
+            provider=provider_enum,
+            instrument_id=instrument.instrument_id,
+            canonical_symbol=instrument.canonical_symbol,
+            provider_symbol=resolved_provider_symbol,
+            requested_start_date=start_date,
+            requested_end_date=end_date,
+            status=status,
+            event_count=len(response.events),
+            inserted_event_count=inserted,
+            updated_event_count=updated,
+            unchanged_event_count=unchanged,
+            rejected_event_count=rejected,
+            coverage_id=coverage.coverage_id,
+            coverage_status=coverage.status,
+            warnings=tuple(dict.fromkeys(warnings)),
+        )
 
     def _resolve_provider(
         self,

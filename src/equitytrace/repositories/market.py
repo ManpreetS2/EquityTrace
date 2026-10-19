@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,8 +19,14 @@ from equitytrace.market.models import (
     MarketInstrument,
     MarketSymbolMapping,
     PriceAdjustmentMode,
+    SplitCoverageStatus,
+    StockSplitCoverage,
+    StockSplitEvent,
     make_instrument_id,
     make_mapping_id,
+    make_split_coverage_id,
+    make_split_event_id,
+    metadata_json,
 )
 from equitytrace.models import utc_now as _utc_now
 
@@ -841,6 +847,332 @@ class MarketRepository:
             ],
         )
 
+    def upsert_stock_split_event(self, event: StockSplitEvent) -> str:
+        """Insert or update a stock-split event. Returns inserted|updated|unchanged."""
+        self._require_instrument_exists(event.instrument_id)
+        existing = self._conn.execute(
+            """
+            SELECT from_factor, to_factor, share_multiplier, source_ratio, description,
+                   available_at, retrieved_at, source_metadata_json, provider_symbol
+            FROM stock_split_events
+            WHERE event_id = ?
+            """,
+            [event.event_id],
+        ).fetchone()
+        now = _utc_now()
+        if existing is None:
+            self._conn.execute(
+                """
+                INSERT INTO stock_split_events (
+                    event_id, instrument_id, provider, provider_symbol, effective_date,
+                    from_factor, to_factor, share_multiplier, source_ratio, description,
+                    available_at, retrieved_at, source_metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    event.event_id,
+                    event.instrument_id,
+                    event.provider.value,
+                    event.provider_symbol,
+                    event.effective_date,
+                    str(event.from_factor),
+                    str(event.to_factor),
+                    str(event.share_multiplier),
+                    str(event.source_ratio) if event.source_ratio is not None else None,
+                    event.description,
+                    event.available_at,
+                    event.retrieved_at,
+                    event.source_metadata_json,
+                    now,
+                    now,
+                ],
+            )
+            return "inserted"
+
+        same = (
+            Decimal(str(existing[0])) == event.from_factor
+            and Decimal(str(existing[1])) == event.to_factor
+            and Decimal(str(existing[2])) == event.share_multiplier
+            and (
+                (existing[3] is None and event.source_ratio is None)
+                or (
+                    existing[3] is not None
+                    and event.source_ratio is not None
+                    and Decimal(str(existing[3])) == event.source_ratio
+                )
+            )
+            and existing[4] == event.description
+            and _as_utc(existing[5]) == event.available_at.astimezone(UTC)
+            and str(existing[8]) == event.provider_symbol
+            and existing[7] == event.source_metadata_json
+        )
+        if same:
+            return "unchanged"
+
+        self._conn.execute(
+            """
+            UPDATE stock_split_events SET
+                provider_symbol = ?,
+                from_factor = ?,
+                to_factor = ?,
+                share_multiplier = ?,
+                source_ratio = ?,
+                description = ?,
+                available_at = ?,
+                retrieved_at = ?,
+                source_metadata_json = ?,
+                updated_at = ?
+            WHERE event_id = ?
+            """,
+            [
+                event.provider_symbol,
+                str(event.from_factor),
+                str(event.to_factor),
+                str(event.share_multiplier),
+                str(event.source_ratio) if event.source_ratio is not None else None,
+                event.description,
+                event.available_at,
+                event.retrieved_at,
+                event.source_metadata_json,
+                now,
+                event.event_id,
+            ],
+        )
+        return "updated"
+
+    def upsert_stock_split_coverage(self, coverage: StockSplitCoverage) -> str:
+        """Insert or update a coverage row. Returns inserted|updated|unchanged."""
+        self._require_instrument_exists(coverage.instrument_id)
+        existing = self._conn.execute(
+            """
+            SELECT status, completeness_basis, limitations_json, retrieved_at,
+                   source_metadata_json, provider_symbol
+            FROM stock_split_coverage
+            WHERE coverage_id = ?
+            """,
+            [coverage.coverage_id],
+        ).fetchone()
+        now = _utc_now()
+        limitations_json = json.dumps(list(coverage.limitations))
+        if existing is None:
+            self._conn.execute(
+                """
+                INSERT INTO stock_split_coverage (
+                    coverage_id, instrument_id, provider, provider_symbol,
+                    coverage_start, coverage_end, status, completeness_basis,
+                    limitations_json, retrieved_at, source_metadata_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    coverage.coverage_id,
+                    coverage.instrument_id,
+                    coverage.provider.value,
+                    coverage.provider_symbol,
+                    coverage.coverage_start,
+                    coverage.coverage_end,
+                    coverage.status.value,
+                    coverage.completeness_basis,
+                    limitations_json,
+                    coverage.retrieved_at,
+                    coverage.source_metadata_json,
+                    now,
+                    now,
+                ],
+            )
+            return "inserted"
+
+        same = (
+            str(existing[0]) == coverage.status.value
+            and str(existing[1]) == coverage.completeness_basis
+            and existing[2] == limitations_json
+            and str(existing[4]) == coverage.source_metadata_json
+            and str(existing[5]) == coverage.provider_symbol
+        )
+        if same:
+            return "unchanged"
+
+        self._conn.execute(
+            """
+            UPDATE stock_split_coverage SET
+                provider_symbol = ?,
+                status = ?,
+                completeness_basis = ?,
+                limitations_json = ?,
+                retrieved_at = ?,
+                source_metadata_json = ?,
+                updated_at = ?
+            WHERE coverage_id = ?
+            """,
+            [
+                coverage.provider_symbol,
+                coverage.status.value,
+                coverage.completeness_basis,
+                limitations_json,
+                coverage.retrieved_at,
+                coverage.source_metadata_json,
+                now,
+                coverage.coverage_id,
+            ],
+        )
+        return "updated"
+
+    def get_verified_split_coverage(
+        self,
+        instrument_id: str,
+        *,
+        shares_fact_date: date,
+        price_date: date,
+        provider: MarketDataProviderName = MarketDataProviderName.TWELVE_DATA,
+    ) -> StockSplitCoverage | None:
+        """Return the best verified coverage fully containing (fact_date, price_date]."""
+        if shares_fact_date >= price_date:
+            return None
+        first_event_day = shares_fact_date + timedelta(days=1)
+        rows = self._conn.execute(
+            """
+            SELECT coverage_id, instrument_id, provider, provider_symbol,
+                   coverage_start, coverage_end, status, completeness_basis,
+                   limitations_json, retrieved_at, source_metadata_json
+            FROM stock_split_coverage
+            WHERE instrument_id = ?
+              AND provider = ?
+              AND status = ?
+              AND coverage_start <= ?
+              AND coverage_end >= ?
+            ORDER BY coverage_start ASC, coverage_end ASC, coverage_id ASC
+            """,
+            [
+                instrument_id,
+                provider.value,
+                SplitCoverageStatus.VERIFIED.value,
+                first_event_day,
+                price_date,
+            ],
+        ).fetchall()
+        if not rows:
+            # Surface non-verified rows for reason classification when present.
+            fallback = self._conn.execute(
+                """
+                SELECT coverage_id, instrument_id, provider, provider_symbol,
+                       coverage_start, coverage_end, status, completeness_basis,
+                       limitations_json, retrieved_at, source_metadata_json
+                FROM stock_split_coverage
+                WHERE instrument_id = ?
+                  AND provider = ?
+                ORDER BY retrieved_at DESC, coverage_id ASC
+                LIMIT 1
+                """,
+                [instrument_id, provider.value],
+            ).fetchone()
+            return _row_to_split_coverage(fallback) if fallback else None
+        return _row_to_split_coverage(rows[0])
+
+    def list_stock_split_events(
+        self,
+        instrument_id: str,
+        *,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        provider: MarketDataProviderName = MarketDataProviderName.TWELVE_DATA,
+        as_of: datetime | None = None,
+    ) -> list[StockSplitEvent]:
+        sql = """
+            SELECT event_id, instrument_id, provider, provider_symbol, effective_date,
+                   from_factor, to_factor, share_multiplier, source_ratio, description,
+                   available_at, retrieved_at, source_metadata_json
+            FROM stock_split_events
+            WHERE instrument_id = ?
+              AND provider = ?
+        """
+        params: list[object] = [instrument_id, provider.value]
+        if start_date is not None:
+            sql += " AND effective_date >= ?"
+            params.append(start_date)
+        if end_date is not None:
+            sql += " AND effective_date <= ?"
+            params.append(end_date)
+        if as_of is not None:
+            as_of_utc = as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)
+            sql += " AND available_at <= ?"
+            params.append(as_of_utc.astimezone(UTC))
+        sql += " ORDER BY effective_date ASC, event_id ASC"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [_row_to_split_event(row) for row in rows]
+
+    def build_stock_split_event(
+        self,
+        *,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        provider_symbol: str,
+        effective_date: date,
+        from_factor: Decimal,
+        to_factor: Decimal,
+        share_multiplier: Decimal,
+        source_ratio: Decimal | None,
+        description: str | None,
+        available_at: datetime,
+        retrieved_at: datetime,
+        source_metadata: dict[str, object] | None = None,
+    ) -> StockSplitEvent:
+        return StockSplitEvent(
+            event_id=make_split_event_id(
+                instrument_id,
+                provider.value,
+                effective_date,
+                from_factor,
+                to_factor,
+            ),
+            instrument_id=instrument_id,
+            provider=provider,
+            provider_symbol=provider_symbol,
+            effective_date=effective_date,
+            from_factor=from_factor,
+            to_factor=to_factor,
+            share_multiplier=share_multiplier,
+            source_ratio=source_ratio,
+            description=description,
+            available_at=available_at,
+            retrieved_at=retrieved_at,
+            source_metadata_json=metadata_json(source_metadata),
+        )
+
+    def build_stock_split_coverage(
+        self,
+        *,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        provider_symbol: str,
+        coverage_start: date,
+        coverage_end: date,
+        status: SplitCoverageStatus,
+        completeness_basis: str,
+        limitations: tuple[str, ...] = (),
+        retrieved_at: datetime,
+        source_metadata: dict[str, object] | None = None,
+    ) -> StockSplitCoverage:
+        return StockSplitCoverage(
+            coverage_id=make_split_coverage_id(
+                instrument_id,
+                provider.value,
+                provider_symbol,
+                coverage_start,
+                coverage_end,
+                completeness_basis,
+            ),
+            instrument_id=instrument_id,
+            provider=provider,
+            provider_symbol=provider_symbol,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            status=status,
+            completeness_basis=completeness_basis,
+            limitations=limitations,
+            retrieved_at=retrieved_at,
+            source_metadata_json=metadata_json(source_metadata),
+        )
+
 
 def _intervals_overlap(
     a_from: date | None,
@@ -912,4 +1244,44 @@ def _row_to_bar(row: tuple[object, ...]) -> DailyPriceBar:
         available_at=_as_utc(row[11]),
         fetched_at=_as_utc(row[12]),
         source_metadata_json=str(row[13]) if row[13] is not None else None,
+    )
+
+
+def _row_to_split_event(row: tuple[object, ...]) -> StockSplitEvent:
+    return StockSplitEvent(
+        event_id=str(row[0]),
+        instrument_id=str(row[1]),
+        provider=MarketDataProviderName(str(row[2])),
+        provider_symbol=str(row[3]),
+        effective_date=row[4],
+        from_factor=Decimal(str(row[5])),
+        to_factor=Decimal(str(row[6])),
+        share_multiplier=Decimal(str(row[7])),
+        source_ratio=Decimal(str(row[8])) if row[8] is not None else None,
+        description=str(row[9]) if row[9] is not None else None,
+        available_at=_as_utc(row[10]),
+        retrieved_at=_as_utc(row[11]),
+        source_metadata_json=str(row[12]) if row[12] is not None else None,
+    )
+
+
+def _row_to_split_coverage(row: tuple[object, ...]) -> StockSplitCoverage:
+    limitations_raw = row[8]
+    limitations: tuple[str, ...] = ()
+    if limitations_raw is not None:
+        parsed = json.loads(str(limitations_raw))
+        if isinstance(parsed, list):
+            limitations = tuple(str(item) for item in parsed)
+    return StockSplitCoverage(
+        coverage_id=str(row[0]),
+        instrument_id=str(row[1]),
+        provider=MarketDataProviderName(str(row[2])),
+        provider_symbol=str(row[3]),
+        coverage_start=row[4],
+        coverage_end=row[5],
+        status=SplitCoverageStatus(str(row[6])),
+        completeness_basis=str(row[7]),
+        limitations=limitations,
+        retrieved_at=_as_utc(row[9]),
+        source_metadata_json=str(row[10]) if row[10] is not None else None,
     )

@@ -211,6 +211,126 @@ class SharesOutstandingResult(BaseModel):
         return self.shares is not None and self.shares > 0
 
 
+class SplitCoverageStatus(StrEnum):
+    """Whether a stored coverage interval may certify split absence/presence."""
+
+    VERIFIED = "verified"
+    UNKNOWN = "unknown"
+    ERROR = "error"
+
+
+class StockSplitEvent(BaseModel):
+    """One verified stock-split event attributed to a market instrument."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event_id: str
+    instrument_id: str
+    provider: MarketDataProviderName
+    provider_symbol: str
+    effective_date: date
+    from_factor: Decimal
+    to_factor: Decimal
+    share_multiplier: Decimal
+    source_ratio: Decimal | None = None
+    description: str | None = None
+    # Modeled research eligibility (not vendor publication time).
+    available_at: datetime
+    retrieved_at: datetime
+    source_metadata_json: str | None = None
+
+    @field_validator("from_factor", "to_factor", "share_multiplier", "source_ratio", mode="before")
+    @classmethod
+    def _to_decimal(cls, value: object) -> object:
+        if value is None or isinstance(value, Decimal):
+            return value
+        if isinstance(value, (int, float, str)):
+            return Decimal(str(value))
+        return value
+
+
+class StockSplitCoverage(BaseModel):
+    """Verified provider coverage interval for stock-split history."""
+
+    model_config = ConfigDict(frozen=True)
+
+    coverage_id: str
+    instrument_id: str
+    provider: MarketDataProviderName
+    provider_symbol: str
+    coverage_start: date
+    coverage_end: date
+    status: SplitCoverageStatus
+    completeness_basis: str
+    limitations: tuple[str, ...] = ()
+    retrieved_at: datetime
+    source_metadata_json: str | None = None
+
+
+class ProviderSplitEvent(BaseModel):
+    """Normalized provider stock-split row prior to persistence."""
+
+    model_config = ConfigDict(frozen=True)
+
+    effective_date: date
+    from_factor: Decimal
+    to_factor: Decimal
+    share_multiplier: Decimal
+    source_ratio: Decimal | None = None
+    description: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("from_factor", "to_factor", "share_multiplier", "source_ratio", mode="before")
+    @classmethod
+    def _to_decimal(cls, value: object) -> object:
+        if value is None or isinstance(value, Decimal):
+            return value
+        if isinstance(value, (int, float, str)):
+            return Decimal(str(value))
+        return value
+
+
+class ProviderSplitsResponse(BaseModel):
+    """Provider response containing normalized stock-split events."""
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: MarketDataProviderName
+    provider_symbol: str
+    requested_start_date: date
+    requested_end_date: date
+    exchange_timezone: str = "America/New_York"
+    events: tuple[ProviderSplitEvent, ...] = ()
+    meta: dict[str, Any] = Field(default_factory=dict)
+    malformed_row_count: int = 0
+    duplicate_row_count: int = 0
+    conflicting_dates: tuple[date, ...] = ()
+
+
+class SplitIngestionResult(BaseModel):
+    """Typed summary of a stock-split ingestion attempt."""
+
+    model_config = ConfigDict(frozen=True)
+
+    run_id: str
+    provider: MarketDataProviderName
+    instrument_id: str
+    canonical_symbol: str
+    provider_symbol: str
+    requested_start_date: date
+    requested_end_date: date
+    status: MarketDataRunStatus
+    event_count: int = 0
+    inserted_event_count: int = 0
+    updated_event_count: int = 0
+    unchanged_event_count: int = 0
+    rejected_event_count: int = 0
+    coverage_id: str | None = None
+    coverage_status: SplitCoverageStatus | None = None
+    error_summary: str | None = None
+    warnings: tuple[str, ...] = ()
+
+
 class MarketCapResult(BaseModel):
     """Historically safe market capitalization with full provenance."""
 
@@ -222,9 +342,15 @@ class MarketCapResult(BaseModel):
     knowledge_time: datetime | None = None
     raw_close: Decimal | None = None
     currency: str | None = None
+    # Original SEC point-in-time share count (never overwritten by split math).
     shares_outstanding: Decimal | None = None
     shares_fact_date: date | None = None
     shares_available_at: datetime | None = None
+    # Share basis after applying verified splits in (fact_date, price_date].
+    reconciled_shares_outstanding: Decimal | None = None
+    split_share_multiplier: Decimal | None = None
+    split_event_ids: tuple[str, ...] = ()
+    split_coverage_id: str | None = None
     market_cap: Decimal | None = None
     price_provider: MarketDataProviderName | None = None
     price_adjustment_mode: PriceAdjustmentMode | None = None
@@ -297,6 +423,39 @@ class MarketCapSeriesPoint(BaseModel):
 
     as_of_date: date
     result: MarketCapResult
+
+
+def make_split_event_id(
+    instrument_id: str,
+    provider: str,
+    effective_date: date,
+    from_factor: Decimal,
+    to_factor: Decimal,
+) -> str:
+    """Deterministic stock-split event identity."""
+    material = (
+        f"{instrument_id}|{provider}|{effective_date.isoformat()}|"
+        f"{from_factor.normalize()}:{to_factor.normalize()}"
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return f"split_{digest}"
+
+
+def make_split_coverage_id(
+    instrument_id: str,
+    provider: str,
+    provider_symbol: str,
+    coverage_start: date,
+    coverage_end: date,
+    completeness_basis: str,
+) -> str:
+    """Deterministic coverage-row identity for a verified request window."""
+    material = (
+        f"{instrument_id}|{provider}|{provider_symbol}|"
+        f"{coverage_start.isoformat()}|{coverage_end.isoformat()}|{completeness_basis}"
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+    return f"scov_{digest}"
 
 
 def make_instrument_id(canonical_symbol: str) -> str:
