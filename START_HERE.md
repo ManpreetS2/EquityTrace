@@ -1,7 +1,8 @@
 # Start here
 
 Exact commands for a new developer on EquityTrace `1.0.0.dev0` (latest published
-release remains v0.3.2; v1.0 Milestone 1 adds typed research strategies).
+release remains v0.3.2; v1.0 Milestone 1 strategies are merged; Milestone 2 adds
+standalone research reports).
 
 Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
@@ -96,7 +97,7 @@ uv run equitytrace market rank-metric momentum_12_1 AAPL MSFT --as-of 2024-12-31
 
 SEC-only workflows do not need a market-data key. Beta ranking is refused.
 
-## 7. Research strategy (v1.0 Milestone 1)
+## 7. Research strategy and reports (v1.0)
 
 Validate a typed strategy JSON without opening DuckDB:
 
@@ -114,7 +115,17 @@ uv run equitytrace research run --strategy examples/strategies/basic_quality.jso
 uv run equitytrace research show RUN_ID
 ```
 
-HTML reporting is not implemented yet.
+Generate a standalone HTML report or deterministic JSON exports from a
+**persisted** run (read-only DuckDB; no engine, SEC, or Twelve Data calls):
+
+```bash
+uv run equitytrace research report RUN_ID --output reports/research.html
+uv run equitytrace research export RUN_ID --output exports/RUN_ID
+```
+
+Report generation success is separate from research status. Unavailable or
+failed runs still produce diagnostic reports. Strategy name is not persisted;
+the report shows the economic fingerprint and stored package version.
 
 ## 8. Research backtest (offline fixtures or a local DuckDB)
 

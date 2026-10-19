@@ -1,4 +1,4 @@
-"""CLI commands for reproducible research strategies (v1.0 Milestone 1)."""
+"""CLI commands for reproducible research strategies and reports."""
 
 from __future__ import annotations
 
@@ -14,7 +14,9 @@ from equitytrace.config import ConfigurationError, Settings, clear_settings_cach
 from equitytrace.database import Database, initialize_database
 from equitytrace.factors.registry import get_factor
 from equitytrace.portfolio.engine import BacktestEngine
-from equitytrace.portfolio.models import PortfolioRunStatus
+from equitytrace.portfolio.models import BacktestResult, PortfolioRunStatus
+from equitytrace.reporting.export import ReportingError, export_run_json, write_html_report
+from equitytrace.reporting.html import render_research_report
 from equitytrace.repositories.portfolio import PortfolioRepository
 from equitytrace.strategy.io import StrategyIOError, load_strategy
 from equitytrace.strategy.models import fingerprint_request, fingerprint_strategy
@@ -24,7 +26,7 @@ err_console = Console(stderr=True)
 
 research_app = typer.Typer(
     name="research",
-    help="Typed research strategies: validate, run, and show persisted results.",
+    help=("Typed research strategies: validate, run, show, report, and export persisted results."),
     no_args_is_help=True,
 )
 
@@ -243,3 +245,88 @@ def show_cmd(
     table.add_row("equity_point_count", str(len(result.equity)))
     console.print(table)
     # Retrieval succeeded regardless of historical research status.
+
+
+def _load_persisted_run(run_id: str, database: Path | None) -> BacktestResult:
+    settings = _load_settings()
+    path = database or settings.database_path
+    if not path.exists():
+        _user_error(f"Database not found at {path}. Run `equitytrace init-db` first.")
+    db = Database(path)
+    with db.session(read_only=True) as conn:
+        loaded = PortfolioRepository(conn).get_run(run_id.strip())
+    if loaded is None:
+        _user_error(f"No portfolio run found for run_id={run_id!r}.")
+    return loaded
+
+
+@research_app.command("report")
+def report_cmd(
+    run_id: Annotated[str, typer.Argument(help="Persisted portfolio run_id.")],
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Path for the standalone HTML report."),
+    ],
+    database: Annotated[
+        Path | None,
+        typer.Option("--database", help="DuckDB database path override."),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite an existing report file."),
+    ] = False,
+) -> None:
+    """Generate a standalone HTML research report from a persisted run."""
+    result = _load_persisted_run(run_id, database)
+    digest = fingerprint_request(result.request)
+    try:
+        html = render_research_report(result)
+        written = write_html_report(output, html, force=force)
+    except ReportingError as exc:
+        _user_error(str(exc))
+    console.print(
+        Panel.fit(
+            f"report={written}\n"
+            f"run_id={result.run_id}\n"
+            f"fingerprint={digest}\n"
+            f"research_status={result.status.value}\n"
+            "note=Report generation succeeded; research_status is the stored "
+            "economic result, not the report write status.",
+            title="research report",
+        )
+    )
+
+
+@research_app.command("export")
+def export_cmd(
+    run_id: Annotated[str, typer.Argument(help="Persisted portfolio run_id.")],
+    output: Annotated[
+        Path,
+        typer.Option("--output", help="Directory for request.json and result.json."),
+    ],
+    database: Annotated[
+        Path | None,
+        typer.Option("--database", help="DuckDB database path override."),
+    ] = None,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Overwrite existing export files."),
+    ] = False,
+) -> None:
+    """Export deterministic JSON for a persisted research run."""
+    result = _load_persisted_run(run_id, database)
+    digest = fingerprint_request(result.request)
+    try:
+        request_path, result_path = export_run_json(result, output, force=force)
+    except ReportingError as exc:
+        _user_error(str(exc))
+    console.print(
+        Panel.fit(
+            f"request_json={request_path}\n"
+            f"result_json={result_path}\n"
+            f"run_id={result.run_id}\n"
+            f"fingerprint={digest}\n"
+            f"research_status={result.status.value}",
+            title="research export",
+        )
+    )

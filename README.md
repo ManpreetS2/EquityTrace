@@ -16,9 +16,10 @@ equal-weight / inverse-vol / minimum-variance baselines (minimum variance uses a
 narrow skfolio adapter on 252 common daily returns), drifting weights, and
 transparent costs. It is not an execution simulator and does not invent fill
 prices or share quantities. v0.3c does not choose among multiple
-securities/share classes for one issuer. v1.0 Milestone 1 adds typed research
-strategy JSON plus `equitytrace research validate|run|show` (HTML reporting is
-not implemented yet; v1.0 is not released).
+securities/share classes for one issuer. v1.0 Milestone 1 (merged) adds typed
+research strategy JSON plus `equitytrace research validate|run|show`. Milestone 2
+adds standalone HTML reports and deterministic JSON exports via
+`equitytrace research report|export` (no web framework; v1.0 is not released).
 
 See [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) for module navigation.
 
@@ -305,7 +306,7 @@ SEC-only commands continue to work without a market-data API key.
 - v0.3c native backtests currently require `adjustment_mode=all`; raw close remains valuation-only
 - v0.3c does not yet choose among multiple securities/share classes for one issuer; ambiguous same-issuer universes are unavailable
 - Minimum variance only (no HRP, Black-Litterman, CVaR, or turnover-aware optimization)
-- No frontend / research UI
+- No web frontend / live research UI (standalone HTML reports from persisted runs only)
 - Canonical statements are computed on demand (not fully materialized)
 - Concept mappings cover common us-gaap tags; unusual issuer tags may be missing
 - 10-K comparative columns that reuse the current `fy`/`fp` are disambiguated by
@@ -333,8 +334,10 @@ See [docs/roadmap.md](docs/roadmap.md).
 - **v0.3.0 / v0.3a** — Market data foundation (**completed**)
 - **v0.3.1 / v0.3b** — Valuation, momentum, and risk (**completed**)
 - **v0.3.2 / v0.3c** — Native portfolio/backtest + min-variance adapter (**completed**)
-- **v1.0** — Strategy builder / research interface (**in progress** on `1.0.0.dev0`;
-  Milestone 1 = typed strategies + research CLI; not released)
+- **v1.0** — Research presentation (**in progress** on `1.0.0.dev0`; not released)
+  - Milestone 1 = typed strategies + `research validate|run|show` (**merged**)
+  - Milestone 2 = standalone HTML report + JSON export (**in development**)
+  - Milestone 3 = final productization / v1.0.0 release (**not started**)
 
 ## License
 

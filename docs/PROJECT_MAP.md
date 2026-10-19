@@ -16,7 +16,7 @@ this map in the same PR.
 | v0.3a | complete (v0.3.0) |
 | v0.3b | complete (v0.3.1) |
 | v0.3c | complete (v0.3.2) |
-| Next milestone | v1.0 (Milestone 1: research strategies in progress) |
+| Next milestone | v1.0 (Milestone 1 merged; Milestone 2 reports in progress; Milestone 3 not started) |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
@@ -52,7 +52,7 @@ EquityTrace/
 │   ├── cli.py                # SEC / statements / factors CLI
 │   ├── cli_market.py         # market ingest / prices / cap / analytics CLI
 │   ├── cli_portfolio.py      # portfolio backtest CLI
-│   ├── cli_research.py       # research validate|run|show CLI
+│   ├── cli_research.py       # research validate|run|show|report|export CLI
 │   ├── config.py             # EQUITYTRACE_* settings (+ FILINGEDGE_* fallback)
 │   ├── database.py           # schema, init, v0.2 / v0.3a / v0.3b / v0.3c additive repairs
 │   ├── models.py             # Issuer / Security / Filing / FinancialFact
@@ -62,7 +62,8 @@ EquityTrace/
 │   ├── factors/              # fiscal-period factors + ranking
 │   ├── market/               # prices, shares, market cap, window analytics
 │   ├── portfolio/            # native research backtest + skfolio_adapter
-│   └── strategy/             # ResearchStrategy JSON + economic fingerprints
+│   ├── strategy/             # ResearchStrategy JSON + economic fingerprints
+│   └── reporting/            # standalone HTML reports + deterministic JSON exports
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
@@ -177,7 +178,8 @@ CLI: `src/equitytrace/cli_market.py`
 | `src/equitytrace/cli.py` | SEC/statements/factors/rank CLI; `filingedge` deprecation wrapper |
 | `src/equitytrace/cli_market.py` | Market CLI; analytics/rank-metric; non-zero on failed ingest |
 | `src/equitytrace/cli_portfolio.py` | `equitytrace portfolio backtest` |
-| `src/equitytrace/cli_research.py` | `equitytrace research validate\|run\|show` |
+| `src/equitytrace/cli_research.py` | `equitytrace research validate\|run\|show\|report\|export` |
+| `src/equitytrace/reporting/` | Standalone HTML report + `request.json` / `result.json` exports |
 | `src/equitytrace/strategy/` | Typed ResearchStrategy JSON, canonicalize, fingerprint |
 | `src/equitytrace/config.py` | pydantic-settings; `EQUITYTRACE_*` / legacy `FILINGEDGE_*` |
 | `src/equitytrace/database.py` | DuckDB schema + additive v0.2 / v0.3a / v0.3b / v0.3c repairs |
@@ -328,6 +330,7 @@ These must never be violated:
 | Portfolio CLI | `tests/test_portfolio_cli.py` |
 | Research strategies | `tests/test_strategy.py` |
 | Research CLI | `tests/test_research_cli.py` |
+| Research reports / exports | `tests/test_research_reporting.py` |
 | v0.3c migration | `tests/test_migration_v03c.py` |
 | Portfolio leakage / restatements | `tests/test_portfolio_leakage.py` |
 | Fixtures | `tests/fixtures/sec/`, `tests/helpers/` |
@@ -371,8 +374,9 @@ v0.3a correctness still concentrates here:
 See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
 v0.3.1. v0.3c (native portfolio/backtest + minimum-variance adapter) is complete
 in v0.3.2, the latest published release. Active development is `1.0.0.dev0`.
-v1.0 Milestone 1 (typed research strategies + research CLI) is in progress; HTML
-reporting and v1.0 release are not done yet.
+v1.0 Milestone 1 (typed research strategies + research CLI) is merged.
+Milestone 2 (standalone HTML reports + JSON exports) is in progress.
+Milestone 3 and the v1.0 release are not started.
 
 ### v0.3a
 
@@ -418,11 +422,15 @@ Do not add a generic optimizer framework or import skfolio outside the adapter.
 
 ### v1.0
 
-Strategy builder and research interface. Milestone 1 (in progress on
-`1.0.0.dev0`): `strategy/` + `cli_research.py` (`validate` / `run` / `show`).
-Economic identity is a SHA-256 of the canonical BacktestRequest. Strategy name
-is not stored on `portfolio_runs`. HTML reporting is not implemented yet.
-v1.0 is not released.
+Research presentation layer on `1.0.0.dev0` (not released):
+
+* Milestone 1 (**merged**): `strategy/` + `cli_research.py`
+  (`validate` / `run` / `show`). Economic identity is a SHA-256 of the canonical
+  BacktestRequest. Strategy name is not stored on `portfolio_runs`.
+* Milestone 2 (**in progress**): `reporting/` + `research report|export`.
+  Reads `PortfolioRepository.get_run` only. No engine rerun, no schema change,
+  no web framework. HTML embeds inline SVG; JSON exports are deterministic.
+* Milestone 3 (**not started**): final productization / v1.0.0 release.
 
 ### post-v1 / separate quant platform
 
@@ -446,8 +454,10 @@ are out of scope for EquityTrace itself.
 | Market cap / multi-class | `market/market_cap.py` |
 | Momentum / vol / beta / DD | `market/analytics.py` |
 | Portfolio backtest | `portfolio/engine.py` + `cli_portfolio.py` |
+| Research strategies | `strategy/` + `cli_research.py` |
+| Research HTML / JSON export | `reporting/` + `cli_research.py` (`report` / `export`) |
 | Schema / migration | `database.py` + `tests/test_migration_v02.py` / `tests/test_migration_v03b.py` / `tests/test_migration_v03c.py` |
-| CLI exit codes | `cli.py` / `cli_market.py` / `cli_portfolio.py` |
+| CLI exit codes | `cli.py` / `cli_market.py` / `cli_portfolio.py` / `cli_research.py` |
 | Env vars | `config.py` + `.env.example` |
 
 ## How to use this map
