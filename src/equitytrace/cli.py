@@ -157,9 +157,8 @@ def ingest_cmd(
         typer.Option(
             "--refresh",
             help=(
-                "Force fresh SEC HTTP retrieval even when cache entries are still "
-                "within EQUITYTRACE_SEC_CACHE_TTL_SECONDS. Successful responses "
-                "replace the cached payload."
+                "Force fresh SEC fetches even when the cache is within TTL; "
+                "successful responses replace the cached payload."
             ),
         ),
     ] = False,

@@ -250,6 +250,10 @@ def test_http_401_has_no_key_in_error(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 def test_cli_help_documents_refresh() -> None:
+    import re
+
     result = runner.invoke(app, ["ingest", "--help"])
     assert result.exit_code == 0
-    assert "--refresh" in result.output
+    # Rich may style "--refresh" as separate ANSI spans; strip codes first.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--refresh" in plain
