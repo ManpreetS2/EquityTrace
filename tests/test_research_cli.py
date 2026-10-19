@@ -66,6 +66,8 @@ def test_research_help_lists_commands() -> None:
     assert "validate" in result.output
     assert "run" in result.output
     assert "show" in result.output
+    assert "report" in result.output
+    assert "export" in result.output
 
 
 def test_portfolio_backtest_still_registered() -> None:

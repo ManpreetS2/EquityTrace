@@ -168,5 +168,14 @@ metrics, equity path, rebalance path, target weights, warnings, and audit.
 `run_id`, `created_at`, and `completed_at` are execution identifiers, not
 economic identity. Strategy name and description stay in the strategy file;
 `research show` recomputes the fingerprint from persisted `request_json` and
-does not promise the display name. There is no schema change for this milestone.
-HTML reporting and additional optimizers are not in this tree yet.
+does not promise the display name.
+
+v1.0 Milestone 2 adds `reporting/` and `equitytrace research report|export`.
+Reports and exports read persisted runs via `PortfolioRepository.get_run` in a
+read-only DuckDB session. They do not rerun the engine, ingest SEC/market data,
+mutate stored research, or introduce a web framework. HTML is a self-contained
+offline document with inline SVG charts; JSON exports (`request.json`,
+`result.json`) are deterministic and include the economic fingerprint in export
+metadata. Report-generation success is distinct from research status
+(SUCCESS / UNAVAILABLE / FAILED). There is no schema change for this milestone.
+Additional optimizers and Milestone 3 productization are not in this tree yet.
