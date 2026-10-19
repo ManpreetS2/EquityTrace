@@ -1,4 +1,4 @@
-# Architecture (v0.3.2)
+# Architecture (1.0.0.dev0; latest published release v0.3.2)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
 normalization, persistence, canonical statements, factors, market data, and CLI.
@@ -15,7 +15,8 @@ Fundamental factors
 Market data
 Market analytics
 Portfolio/backtest — native weight-return research (v0.3c)
-Presentation/UI — future (v1.0)
+Research strategies — typed JSON + research CLI (v1.0 Milestone 1)
+Presentation/HTML report — future (v1.0 Milestone 2)
 ```
 
 ## Layers
@@ -159,4 +160,13 @@ transports or injected providers. No live SEC or Twelve Data calls in CI.
    - `portfolio.skfolio_adapter` is a narrow ReturnMatrix → target-weight bridge
      only (no WalkForward, turnover-aware optimization, or alternate objectives)
 
-Future (not in this tree): additional optimizers and a research UI (v1.0).
+v1.0 Milestone 1 adds `strategy/` (ResearchStrategy → BacktestRequest + economic
+fingerprint) and `equitytrace research validate|run|show` on top of the existing
+BacktestEngine. The same normalized BacktestRequest, EquityTrace package version,
+and DuckDB evidence must produce economically equivalent status, failure reason,
+metrics, equity path, rebalance path, target weights, warnings, and audit.
+`run_id`, `created_at`, and `completed_at` are execution identifiers, not
+economic identity. Strategy name and description stay in the strategy file;
+`research show` recomputes the fingerprint from persisted `request_json` and
+does not promise the display name. There is no schema change for this milestone.
+HTML reporting and additional optimizers are not in this tree yet.

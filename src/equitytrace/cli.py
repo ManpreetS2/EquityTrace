@@ -16,6 +16,7 @@ from rich.table import Table
 from equitytrace import __version__
 from equitytrace.cli_market import market_app
 from equitytrace.cli_portfolio import portfolio_app
+from equitytrace.cli_research import research_app
 from equitytrace.config import ConfigurationError, Settings, clear_settings_cache, get_settings
 from equitytrace.database import Database, initialize_database
 from equitytrace.factors.engine import FactorEngine
@@ -41,6 +42,7 @@ app = typer.Typer(
 )
 app.add_typer(market_app, name="market")
 app.add_typer(portfolio_app, name="portfolio")
+app.add_typer(research_app, name="research")
 console = Console()
 err_console = Console(stderr=True)
 

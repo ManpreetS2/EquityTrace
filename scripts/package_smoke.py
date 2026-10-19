@@ -189,7 +189,10 @@ print("SKFOLIO", pkg_version("skfolio"))
         )
         print(wheel_out, flush=True)
         print(sdist_out, flush=True)
-        for artifact, extra in ((wheel, ("market", "--help")), (sdist, ())):
+        for artifact, extra in (
+            (wheel, (("market", "--help"), ("research", "--help"))),
+            (sdist, ()),
+        ):
             version_out = _run(
                 [
                     "uv",
@@ -220,7 +223,7 @@ print("SKFOLIO", pkg_version("skfolio"))
                 raise SystemExit(f"CLI version mismatch for {artifact.name}: {version_out!r}")
             if "Usage" not in help_out and "usage" not in help_out.lower():
                 raise SystemExit(f"CLI help failed for {artifact.name}")
-            if extra:
+            for extra_args in extra:
                 extra_out = _run(
                     [
                         "uv",
@@ -230,12 +233,17 @@ print("SKFOLIO", pkg_version("skfolio"))
                         "--with",
                         str(artifact),
                         "equitytrace",
-                        *extra,
+                        *extra_args,
                     ],
                     env=env,
                 )
-                if "analytics" not in extra_out.lower():
+                if extra_args[0] == "market" and "analytics" not in extra_out.lower():
                     raise SystemExit(f"market help missing analytics:\n{extra_out}")
+                if extra_args[0] == "research":
+                    lowered = extra_out.lower()
+                    for command in ("validate", "run", "show"):
+                        if command not in lowered:
+                            raise SystemExit(f"research help missing {command}:\n{extra_out}")
 
     print("package-smoke ok", flush=True)
 

@@ -1,7 +1,7 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace `0.3.2` (v0.3c portfolio and
-minimum-variance adapter complete; latest release is v0.3.2).
+Exact commands for a new developer on EquityTrace `1.0.0.dev0` (latest published
+release remains v0.3.2; v1.0 Milestone 1 adds typed research strategies).
 
 Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
@@ -96,7 +96,29 @@ uv run equitytrace market rank-metric momentum_12_1 AAPL MSFT --as-of 2024-12-31
 
 SEC-only workflows do not need a market-data key. Beta ranking is refused.
 
-## 7. Research backtest (offline fixtures or a local DuckDB)
+## 7. Research strategy (v1.0 Milestone 1)
+
+Validate a typed strategy JSON without opening DuckDB:
+
+```bash
+uv run equitytrace research validate \
+  --strategy examples/strategies/basic_quality.json
+```
+
+Run and show use the same BacktestEngine / portfolio persistence as before.
+Strategy **name** is file metadata only; durable identity is `run_id` plus the
+economic fingerprint recomputed from the persisted request.
+
+```bash
+uv run equitytrace research run --strategy examples/strategies/basic_quality.json
+uv run equitytrace research show RUN_ID
+```
+
+HTML reporting is not implemented yet.
+
+## 8. Research backtest (offline fixtures or a local DuckDB)
+
+`equitytrace portfolio backtest` remains available and unchanged:
 
 ```bash
 uv run equitytrace portfolio backtest \
@@ -120,7 +142,7 @@ always runs with `adjustment_mode=all`; v0.3c native backtests currently require
 that provider-adjusted research path. Exit `2` means the run is
 research-unavailable; exit `1` is a failed run.
 
-## 8. Run the offline test suite
+## 9. Run the offline test suite
 
 ```bash
 uv run pytest
