@@ -65,6 +65,11 @@ def _configure_logging(verbose: bool = False) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    # httpx logs full request URLs at INFO. Keep transport loggers at WARNING+
+    # even under --verbose so credentials never appear in CLI output if a
+    # provider falls back to query-string auth.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _load_settings() -> Settings:
@@ -147,6 +152,17 @@ def ingest_cmd(
         Path | None,
         typer.Option("--database", help="DuckDB database path override."),
     ] = None,
+    refresh: Annotated[
+        bool,
+        typer.Option(
+            "--refresh",
+            help=(
+                "Force fresh SEC HTTP retrieval even when cache entries are still "
+                "within EQUITYTRACE_SEC_CACHE_TTL_SECONDS. Successful responses "
+                "replace the cached payload."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Ingest SEC submissions and Company Facts for a ticker."""
     settings = _load_settings()
@@ -156,10 +172,11 @@ def ingest_cmd(
 
     try:
         with (
-            SecClient(settings) as client,
+            SecClient(settings, force_refresh=refresh) as client,
             console.status(f"[bold green]Ingesting {ticker.upper()}..."),
         ):
             result = repo.ingest_ticker(client, ticker)
+            cache_stats = client.cache_stats
     except ConfigurationError as exc:
         _user_error(str(exc))
     except (SecClientError, SecHttpError, IngestionError) as exc:
@@ -176,6 +193,12 @@ def ingest_cmd(
     table.add_row("Facts", str(result.fact_count))
     table.add_row("Elapsed", f"{result.elapsed_seconds:.2f}s")
     table.add_row("Database", str(path))
+    evidence = (
+        f"{cache_stats.network_fetches} fresh fetch(es), {cache_stats.cache_hits} cache hit(s)"
+    )
+    if refresh:
+        evidence += " (--refresh)"
+    table.add_row("SEC evidence", evidence)
     console.print(table)
 
 
