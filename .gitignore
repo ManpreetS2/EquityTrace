@@ -28,6 +28,9 @@ data/
 *.duckdb
 *.duckdb.wal
 
+# Offline demo outputs (synthetic reports / exports)
+examples/demo/out/
+
 # IDE / OS
 .idea/
 .vscode/

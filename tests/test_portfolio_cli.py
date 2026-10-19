@@ -34,10 +34,10 @@ def test_portfolio_help() -> None:
     assert "--adjustment" not in backtest_help.output
 
 
-def test_version_still_dev_line() -> None:
+def test_version_is_v1() -> None:
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "1.0.0.dev0" in result.output
+    assert "1.0.0" in result.output
 
 
 def test_successful_toy_backtest(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

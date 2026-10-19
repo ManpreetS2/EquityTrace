@@ -1,12 +1,21 @@
 # Start here
 
-Exact commands for a new developer on EquityTrace `1.0.0.dev0` (latest published
-release remains v0.3.2; v1.0 Milestone 1 strategies are merged; Milestone 2 adds
-standalone research reports).
+Exact commands for EquityTrace **v1.0.0** (release candidate in this tree).
+Latest **published** GitHub Release remains **v0.3.2** until v1.0.0 is explicitly
+tagged and published after review.
 
 Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
 before searching the tree.
+
+For a zero-credential walkthrough, run the offline synthetic demo first:
+
+```bash
+uv sync --all-groups --locked
+uv run python scripts/demo_research.py
+```
+
+See [examples/demo/README.md](examples/demo/README.md).
 
 ## 1. Configure environment
 
@@ -115,6 +124,8 @@ uv run equitytrace research run --strategy examples/strategies/basic_quality.jso
 uv run equitytrace research show RUN_ID
 ```
 
+Exit codes for `research run`: `0` SUCCESS, `2` UNAVAILABLE, `1` FAILED.
+
 Generate a standalone HTML report or deterministic JSON exports from a
 **persisted** run (read-only DuckDB; no engine, SEC, or Twelve Data calls):
 
@@ -123,9 +134,10 @@ uv run equitytrace research report RUN_ID --output reports/research.html
 uv run equitytrace research export RUN_ID --output exports/RUN_ID
 ```
 
-Report generation success is separate from research status. Unavailable or
-failed runs still produce diagnostic reports. Strategy name is not persisted;
-the report shows the economic fingerprint and stored package version.
+Report/export exit `0` means the artifact was written; research status may still
+be UNAVAILABLE/FAILED. Diagnostic reports must not invent success metrics.
+Strategy name is not persisted; the report shows the economic fingerprint and
+stored package version.
 
 ## 8. Research backtest (offline fixtures or a local DuckDB)
 
