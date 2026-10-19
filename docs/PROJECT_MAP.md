@@ -11,12 +11,12 @@ this map in the same PR.
 
 | Field | Value |
 | --- | --- |
-| Package | `equitytrace` `1.0.0.dev0` |
-| Latest published release | `v0.3.2` (v0.3c complete) |
+| Package | `equitytrace` `1.0.0` (release candidate) |
+| Latest published release | `v0.3.2` (v0.3c complete; v1.0.0 tag/Release not published yet) |
 | v0.3a | complete (v0.3.0) |
 | v0.3b | complete (v0.3.1) |
 | v0.3c | complete (v0.3.2) |
-| Next milestone | v1.0 (Milestone 1 merged; Milestone 2 reports in progress; Milestone 3 not started) |
+| v1.0 | Milestones 1–2 merged; Milestone 3 productization in release candidate |
 | Default branch | `main` |
 | Storage | DuckDB (idempotent `CREATE IF NOT EXISTS` + additive repair helpers) |
 | Package layout | `src/equitytrace/` |
@@ -64,9 +64,12 @@ EquityTrace/
 │   ├── portfolio/            # native research backtest + skfolio_adapter
 │   ├── strategy/             # ResearchStrategy JSON + economic fingerprints
 │   └── reporting/            # standalone HTML reports + deterministic JSON exports
+├── examples/demo/            # synthetic offline demo strategy + README
+├── scripts/demo_research.py  # offline synthetic end-to-end demo
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
+├── docs/releases/            # prepared release notes (e.g. v1.0.0.md)
 ├── scripts/bootstrap.sh
 ├── .github/workflows/ci.yml
 ├── pyproject.toml
@@ -74,7 +77,8 @@ EquityTrace/
 ```
 
 There is no frontend and no second market provider. skfolio is used only inside
-`portfolio/skfolio_adapter.py` for minimum-variance target weights.
+`portfolio/skfolio_adapter.py` for minimum-variance target weights. The offline
+demo is source-checkout oriented (`scripts/demo_research.py`).
 
 ## Runtime architecture
 
@@ -331,6 +335,7 @@ These must never be violated:
 | Research strategies | `tests/test_strategy.py` |
 | Research CLI | `tests/test_research_cli.py` |
 | Research reports / exports | `tests/test_research_reporting.py` |
+| Offline synthetic demo | `tests/test_demo_research.py` |
 | v0.3c migration | `tests/test_migration_v03c.py` |
 | Portfolio leakage / restatements | `tests/test_portfolio_leakage.py` |
 | Fixtures | `tests/fixtures/sec/`, `tests/helpers/` |
@@ -373,10 +378,10 @@ v0.3a correctness still concentrates here:
 
 See `docs/roadmap.md`. v0.3a is complete in v0.3.0. v0.3b is complete in
 v0.3.1. v0.3c (native portfolio/backtest + minimum-variance adapter) is complete
-in v0.3.2, the latest published release. Active development is `1.0.0.dev0`.
-v1.0 Milestone 1 (typed research strategies + research CLI) is merged.
-Milestone 2 (standalone HTML reports + JSON exports) is in progress.
-Milestone 3 and the v1.0 release are not started.
+in v0.3.2, the latest published release. Package version on this branch is
+`1.0.0` (release candidate). v1.0 Milestones 1–2 are merged; Milestone 3
+prepares docs, the offline demo, and release notes. The annotated `v1.0.0` tag /
+GitHub Release are not published from this candidate alone.
 
 ### v0.3a
 
@@ -422,15 +427,16 @@ Do not add a generic optimizer framework or import skfolio outside the adapter.
 
 ### v1.0
 
-Research presentation layer on `1.0.0.dev0` (not released):
+Research presentation layer on package `1.0.0` (GitHub Release not published yet):
 
 * Milestone 1 (**merged**): `strategy/` + `cli_research.py`
   (`validate` / `run` / `show`). Economic identity is a SHA-256 of the canonical
   BacktestRequest. Strategy name is not stored on `portfolio_runs`.
-* Milestone 2 (**in progress**): `reporting/` + `research report|export`.
+* Milestone 2 (**merged**): `reporting/` + `research report|export`.
   Reads `PortfolioRepository.get_run` only. No engine rerun, no schema change,
   no web framework. HTML embeds inline SVG; JSON exports are deterministic.
-* Milestone 3 (**not started**): final productization / v1.0.0 release.
+* Milestone 3 (**release candidate**): version `1.0.0`, README/docs polish,
+  offline synthetic demo, prepared release notes. Tag/publish require approval.
 
 ### post-v1 / separate quant platform
 

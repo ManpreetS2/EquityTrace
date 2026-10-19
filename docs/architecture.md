@@ -1,4 +1,4 @@
-# Architecture (1.0.0.dev0; latest published release v0.3.2)
+# Architecture (1.0.0; latest published release v0.3.2)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
 normalization, persistence, canonical statements, factors, market data, and CLI.
@@ -178,4 +178,7 @@ offline document with inline SVG charts; JSON exports (`request.json`,
 `result.json`) are deterministic and include the economic fingerprint in export
 metadata. Report-generation success is distinct from research status
 (SUCCESS / UNAVAILABLE / FAILED). There is no schema change for this milestone.
-Additional optimizers and Milestone 3 productization are not in this tree yet.
+v1.0 Milestone 3 productizes the completed CLI + offline HTML workflow, ships an
+offline synthetic demonstration (`scripts/demo_research.py`), and prepares
+package version `1.0.0`. Publishing the annotated `v1.0.0` tag / GitHub Release
+is a separate approval step. Additional optimizers remain out of scope.

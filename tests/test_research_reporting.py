@@ -92,7 +92,7 @@ def _crafted_result(
         rebalances=rebalances,
         equity=equity,
         audit=audit,
-        package_version="1.0.0.dev0",
+        package_version="1.0.0",
     )
 
 

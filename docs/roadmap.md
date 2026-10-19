@@ -62,13 +62,15 @@ narrow skfolio minimum-variance adapter.
 Not in v0.3c: HRP, Black-Litterman, CVaR, risk budgeting, max-turnover
 optimization, or skfolio transaction-cost modeling (EquityTrace costs stay native).
 
-### v1.0 (in progress on 1.0.0.dev0; not released)
+### v1.0 (release candidate `1.0.0`; GitHub Release not published yet)
 
-Latest published release remains **v0.3.2**.
+Latest **published** release remains **v0.3.2** until the annotated `v1.0.0` tag
+and GitHub Release are explicitly approved after review.
 
 * Milestone 1: typed ResearchStrategy JSON + `research validate|run|show` (**merged**)
 * Milestone 2: standalone HTML research report + deterministic JSON export
-  (`research report|export`) — **in development**
-* Milestone 3: final productization / v1.0.0 release (**not started**)
-* Equity / drawdown charts and filing evidence in offline HTML reports (Milestone 2)
-* No web framework; reports open from a local HTML file
+  (`research report|export`) (**merged**)
+* Milestone 3: productization, offline synthetic demo, docs, version `1.0.0`
+  (**this release candidate**)
+* Interface freeze: CLI + offline HTML (no web framework)
+* Release notes: `docs/releases/v1.0.0.md`
