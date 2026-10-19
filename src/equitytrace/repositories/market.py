@@ -1024,13 +1024,29 @@ class MarketRepository:
         shares_fact_date: date,
         price_date: date,
         provider: MarketDataProviderName = MarketDataProviderName.TWELVE_DATA,
+        provider_symbol: str | None = None,
     ) -> StockSplitCoverage | None:
-        """Return the best verified coverage fully containing (fact_date, price_date]."""
+        """Return the best verified coverage fully containing (fact_date, price_date].
+
+        When ``provider_symbol`` is set, only coverage bound to that provider
+        identity is eligible. Mismatched symbols never establish verified proof.
+        """
         if shares_fact_date >= price_date:
             return None
         first_event_day = shares_fact_date + timedelta(days=1)
+        symbol_clause = ""
+        params: list[object] = [
+            instrument_id,
+            provider.value,
+            SplitCoverageStatus.VERIFIED.value,
+            first_event_day,
+            price_date,
+        ]
+        if provider_symbol is not None:
+            symbol_clause = " AND upper(provider_symbol) = ?"
+            params.append(provider_symbol.strip().upper())
         rows = self._conn.execute(
-            """
+            f"""
             SELECT coverage_id, instrument_id, provider, provider_symbol,
                    coverage_start, coverage_end, status, completeness_basis,
                    limitations_json, retrieved_at, source_metadata_json
@@ -1040,30 +1056,31 @@ class MarketRepository:
               AND status = ?
               AND coverage_start <= ?
               AND coverage_end >= ?
+              {symbol_clause}
             ORDER BY coverage_start ASC, coverage_end ASC, coverage_id ASC
             """,
-            [
-                instrument_id,
-                provider.value,
-                SplitCoverageStatus.VERIFIED.value,
-                first_event_day,
-                price_date,
-            ],
+            params,
         ).fetchall()
         if not rows:
             # Surface non-verified rows for reason classification when present.
+            fallback_params: list[object] = [instrument_id, provider.value]
+            fallback_symbol = ""
+            if provider_symbol is not None:
+                fallback_symbol = " AND upper(provider_symbol) = ?"
+                fallback_params.append(provider_symbol.strip().upper())
             fallback = self._conn.execute(
-                """
+                f"""
                 SELECT coverage_id, instrument_id, provider, provider_symbol,
                        coverage_start, coverage_end, status, completeness_basis,
                        limitations_json, retrieved_at, source_metadata_json
                 FROM stock_split_coverage
                 WHERE instrument_id = ?
                   AND provider = ?
+                  {fallback_symbol}
                 ORDER BY retrieved_at DESC, coverage_id ASC
                 LIMIT 1
                 """,
-                [instrument_id, provider.value],
+                fallback_params,
             ).fetchone()
             return _row_to_split_coverage(fallback) if fallback else None
         return _row_to_split_coverage(rows[0])
@@ -1075,6 +1092,7 @@ class MarketRepository:
         start_date: date | None = None,
         end_date: date | None = None,
         provider: MarketDataProviderName = MarketDataProviderName.TWELVE_DATA,
+        provider_symbol: str | None = None,
         as_of: datetime | None = None,
     ) -> list[StockSplitEvent]:
         sql = """
@@ -1086,6 +1104,9 @@ class MarketRepository:
               AND provider = ?
         """
         params: list[object] = [instrument_id, provider.value]
+        if provider_symbol is not None:
+            sql += " AND upper(provider_symbol) = ?"
+            params.append(provider_symbol.strip().upper())
         if start_date is not None:
             sql += " AND effective_date >= ?"
             params.append(start_date)
@@ -1099,6 +1120,223 @@ class MarketRepository:
         sql += " ORDER BY effective_date ASC, event_id ASC"
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_split_event(row) for row in rows]
+
+    def resolve_provider_symbol_for_interval(
+        self,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        *,
+        start_date: date,
+        end_date: date,
+    ) -> str | None:
+        """Return the unique primary provider symbol covering ``[start_date, end_date]``.
+
+        Returns ``None`` on gaps or when multiple distinct symbols cover the
+        interval (fail closed for split reconciliation).
+        """
+        if start_date > end_date:
+            return None
+        mappings = self.list_primary_mappings(instrument_id, provider)
+        if not mappings:
+            return None
+
+        def covers(m: MarketSymbolMapping, day: date) -> bool:
+            after_start = m.valid_from is None or day >= m.valid_from
+            before_end = m.valid_to is None or day <= m.valid_to
+            return after_start and before_end
+
+        start_hits = [m for m in mappings if covers(m, start_date)]
+        if not start_hits:
+            return None
+        start_hits.sort(key=lambda m: (m.valid_from is None, m.valid_from or date.min))
+        symbol = start_hits[-1].provider_symbol.strip().upper()
+        cursor = start_date
+        while cursor <= end_date:
+            hits = [
+                m
+                for m in mappings
+                if covers(m, cursor) and m.provider_symbol.strip().upper() == symbol
+            ]
+            other = [
+                m
+                for m in mappings
+                if covers(m, cursor) and m.provider_symbol.strip().upper() != symbol
+            ]
+            if other or not hits:
+                return None
+            hits.sort(key=lambda m: (m.valid_from is None, m.valid_from or date.min))
+            current = hits[-1]
+            if current.valid_to is None or current.valid_to >= end_date:
+                return symbol
+            cursor = current.valid_to + timedelta(days=1)
+        return symbol
+
+    def replace_verified_split_window(
+        self,
+        *,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        provider_symbol: str,
+        window_start: date,
+        window_end: date,
+        events: list[StockSplitEvent],
+        coverage: StockSplitCoverage,
+    ) -> UpsertCounts:
+        """Atomically replace split events in ``[window_start, window_end]`` and coverage.
+
+        Deletes only events for the same instrument/provider/provider_symbol inside
+        the refreshed window, then inserts the replacement snapshot and upserts
+        VERIFIED coverage. Overlapping VERIFIED rows for the same identity that are
+        not this coverage_id are demoted so stale snapshots cannot remain certified.
+        """
+        symbol = provider_symbol.strip().upper()
+        if coverage.status is not SplitCoverageStatus.VERIFIED:
+            raise ValueError("replace_verified_split_window requires VERIFIED coverage")
+        if coverage.provider_symbol.strip().upper() != symbol:
+            raise ValueError("coverage provider_symbol must match the replace window")
+        for event in events:
+            if event.provider_symbol.strip().upper() != symbol:
+                raise ValueError("event provider_symbol must match the replace window")
+            if not (window_start <= event.effective_date <= window_end):
+                raise ValueError("event effective_date outside replace window")
+
+        counts = UpsertCounts()
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            self._conn.execute(
+                """
+                DELETE FROM stock_split_events
+                WHERE instrument_id = ?
+                  AND provider = ?
+                  AND upper(provider_symbol) = ?
+                  AND effective_date >= ?
+                  AND effective_date <= ?
+                """,
+                [instrument_id, provider.value, symbol, window_start, window_end],
+            )
+            now = _utc_now()
+            for event in events:
+                self._conn.execute(
+                    """
+                    INSERT INTO stock_split_events (
+                        event_id, instrument_id, provider, provider_symbol, effective_date,
+                        from_factor, to_factor, share_multiplier, source_ratio, description,
+                        available_at, retrieved_at, source_metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        event.event_id,
+                        event.instrument_id,
+                        event.provider.value,
+                        symbol,
+                        event.effective_date,
+                        str(event.from_factor),
+                        str(event.to_factor),
+                        str(event.share_multiplier),
+                        str(event.source_ratio) if event.source_ratio is not None else None,
+                        event.description,
+                        event.available_at,
+                        event.retrieved_at,
+                        event.source_metadata_json,
+                        now,
+                        now,
+                    ],
+                )
+                counts.inserted += 1
+
+            # Demote overlapping VERIFIED snapshots for the same identity.
+            self._conn.execute(
+                """
+                UPDATE stock_split_coverage SET
+                    status = ?,
+                    completeness_basis = ?,
+                    updated_at = ?
+                WHERE instrument_id = ?
+                  AND provider = ?
+                  AND upper(provider_symbol) = ?
+                  AND status = ?
+                  AND coverage_id != ?
+                  AND coverage_start <= ?
+                  AND coverage_end >= ?
+                """,
+                [
+                    SplitCoverageStatus.UNKNOWN.value,
+                    "superseded_by_newer_verified_refresh",
+                    now,
+                    instrument_id,
+                    provider.value,
+                    symbol,
+                    SplitCoverageStatus.VERIFIED.value,
+                    coverage.coverage_id,
+                    window_end,
+                    window_start,
+                ],
+            )
+            self.upsert_stock_split_coverage(coverage)
+            self._conn.execute("COMMIT")
+            return counts
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def demote_overlapping_verified_split_coverage(
+        self,
+        *,
+        instrument_id: str,
+        provider: MarketDataProviderName,
+        provider_symbol: str,
+        window_start: date,
+        window_end: date,
+        reason: str,
+    ) -> int:
+        """Demote overlapping VERIFIED coverage so a failed refresh cannot certify."""
+        symbol = provider_symbol.strip().upper()
+        now = _utc_now()
+        before = self._conn.execute(
+            """
+            SELECT COUNT(*) FROM stock_split_coverage
+            WHERE instrument_id = ?
+              AND provider = ?
+              AND upper(provider_symbol) = ?
+              AND status = ?
+              AND coverage_start <= ?
+              AND coverage_end >= ?
+            """,
+            [
+                instrument_id,
+                provider.value,
+                symbol,
+                SplitCoverageStatus.VERIFIED.value,
+                window_end,
+                window_start,
+            ],
+        ).fetchone()
+        self._conn.execute(
+            """
+            UPDATE stock_split_coverage SET
+                status = ?,
+                completeness_basis = ?,
+                updated_at = ?
+            WHERE instrument_id = ?
+              AND provider = ?
+              AND upper(provider_symbol) = ?
+              AND status = ?
+              AND coverage_start <= ?
+              AND coverage_end >= ?
+            """,
+            [
+                SplitCoverageStatus.ERROR.value,
+                reason,
+                now,
+                instrument_id,
+                provider.value,
+                symbol,
+                SplitCoverageStatus.VERIFIED.value,
+                window_end,
+                window_start,
+            ],
+        )
+        return int(before[0]) if before is not None else 0
 
     def build_stock_split_event(
         self,

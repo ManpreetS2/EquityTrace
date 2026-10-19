@@ -305,6 +305,9 @@ class ProviderSplitsResponse(BaseModel):
     malformed_row_count: int = 0
     duplicate_row_count: int = 0
     conflicting_dates: tuple[date, ...] = ()
+    # False when any in-window row failed semantic validation. Incomplete
+    # responses must never establish VERIFIED no-split coverage.
+    response_complete: bool = True
 
 
 class SplitIngestionResult(BaseModel):

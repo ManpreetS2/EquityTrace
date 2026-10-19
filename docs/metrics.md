@@ -66,8 +66,13 @@ and the raw price date.
 
 * `split_coverage_unavailable` — no verified coverage for the gap
 * `split_coverage_unknown` — coverage row present but not verified
+* `split_coverage_error` — coverage row present but marked error/incomplete
 * `split_coverage_starts_too_late` / `split_coverage_ends_before_price_date`
 * `conflicting_split_events` — same effective date, disagreeing multipliers
+* `split_event_unavailable_at_knowledge_time` — an effective split in the gap
+  is not yet eligible at the research cutoff (never reinterpreted as no-split)
+* `split_provider_symbol_ambiguous` — mapping gap or multi-symbol identity over
+  the gap
 
 When market cap is unavailable for these reasons, `fcf_yield`,
 `price_to_earnings`, `price_to_sales`, and `price_to_book` stay unavailable;
@@ -77,8 +82,11 @@ ranking excludes them; backtest signal selection fails closed.
 
 * Explicit CLI: `equitytrace market ingest-splits SYMBOL --start … --end …`
 * Twelve Data `GET /splits` (Grow/Venture+; ~20 credits/symbol). Not called
-  during factor calculation. Plan denial / auth failure writes no verified
-  coverage (fail closed). Coverage is limited to the requested start/end.
+  during factor calculation. Plan denial / auth failure / malformed rows /
+  conflicting rows write no VERIFIED coverage (fail closed). Empty parsed
+  events certify “no splits” only when the full response validated cleanly.
+* Completeness is capped at a conservative 10-year certifiable floor from the
+  request end (Twelve Data markets ~10+ years). Wider requests stay UNKNOWN.
 
 ### FCF yield (`fcf_yield`)
 

@@ -173,17 +173,54 @@ class MarketCapService:
                 warnings=tuple(dict.fromkeys(warnings)),
             )
 
+        # Coverage and events must share one defensible provider-symbol identity
+        # over the share-basis gap. Gaps or multi-symbol mappings fail closed.
+        gap_start = shares.fact_date
+        gap_end = price.trading_date
+        provider_symbol = self._repo.resolve_provider_symbol_for_interval(
+            instrument.instrument_id,
+            price.provider,
+            start_date=gap_start,
+            end_date=gap_end,
+        )
+        if provider_symbol is None and gap_start < gap_end:
+            # Fall back to canonical symbol only when no mappings exist at all.
+            mappings = self._repo.list_primary_mappings(instrument.instrument_id, price.provider)
+            if mappings:
+                return MarketCapResult(
+                    ticker=symbol,
+                    market_date_requested=market_date,
+                    price_date_used=price.trading_date,
+                    knowledge_time=knowledge_time,
+                    raw_close=price.close,
+                    currency=price.currency,
+                    shares_outstanding=shares.shares,
+                    shares_fact_date=shares.fact_date,
+                    shares_available_at=shares.available_at,
+                    price_provider=price.provider,
+                    price_adjustment_mode=PriceAdjustmentMode.NONE,
+                    price_fetched_at=price.fetched_at,
+                    sec_concept=shares.concept,
+                    sec_accession=shares.accession_number,
+                    sec_form=shares.form,
+                    unavailable_reason="split_provider_symbol_ambiguous",
+                    warnings=tuple(dict.fromkeys(warnings)),
+                )
+            provider_symbol = symbol
+
         coverage = self._repo.get_verified_split_coverage(
             instrument.instrument_id,
             shares_fact_date=shares.fact_date,
             price_date=price.trading_date,
             provider=price.provider,
+            provider_symbol=provider_symbol,
         )
         events = self._repo.list_stock_split_events(
             instrument.instrument_id,
             start_date=shares.fact_date,
             end_date=price.trading_date,
             provider=price.provider,
+            provider_symbol=provider_symbol,
             # Load candidates; reconcile_share_basis applies available_at <= knowledge.
             as_of=None,
         )

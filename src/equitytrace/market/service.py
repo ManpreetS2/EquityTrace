@@ -30,8 +30,10 @@ from equitytrace.market.providers.errors import (
 )
 from equitytrace.market.providers.twelve_data import (
     SPLITS_COVERAGE_BASIS,
+    SPLITS_COVERAGE_ERROR_BASIS,
     SPLITS_COVERAGE_LIMITATIONS,
     TwelveDataProvider,
+    certifiable_splits_start,
     validate_ohlcv,
 )
 from equitytrace.models import utc_now
@@ -642,6 +644,14 @@ class MarketDataService:
         try:
             response = fetch_splits(resolved_provider_symbol, start_date, end_date)
         except MarketDataAuthError as exc:
+            self._repo.demote_overlapping_verified_split_coverage(
+                instrument_id=instrument.instrument_id,
+                provider=provider_enum,
+                provider_symbol=resolved_provider_symbol,
+                window_start=start_date,
+                window_end=end_date,
+                reason="split_refresh_failed_auth",
+            )
             self._repo.complete_market_data_run(
                 run_id,
                 status=MarketDataRunStatus.FAILED,
@@ -660,6 +670,14 @@ class MarketDataService:
                 warnings=tuple(warnings),
             )
         except MarketDataError as exc:
+            self._repo.demote_overlapping_verified_split_coverage(
+                instrument_id=instrument.instrument_id,
+                provider=provider_enum,
+                provider_symbol=resolved_provider_symbol,
+                window_start=start_date,
+                window_end=end_date,
+                reason="split_refresh_failed",
+            )
             self._repo.complete_market_data_run(
                 run_id,
                 status=MarketDataRunStatus.FAILED,
@@ -682,10 +700,103 @@ class MarketDataService:
             warnings.append(f"malformed_split_rows:{response.malformed_row_count}")
         if response.duplicate_row_count:
             warnings.append(f"duplicate_split_rows:{response.duplicate_row_count}")
+        if response.conflicting_dates:
+            warnings.append(
+                "conflicting_split_dates:"
+                + ",".join(d.isoformat() for d in response.conflicting_dates)
+            )
 
         retrieved_at = utc_now()
-        inserted = updated = unchanged = 0
-        rejected = response.malformed_row_count
+        cert_floor = certifiable_splits_start(end_date)
+        depth_ok = start_date >= cert_floor
+        if not depth_ok:
+            warnings.append(
+                "request_exceeds_certifiable_split_history:"
+                f"earliest_certifiable={cert_floor.isoformat()}"
+            )
+
+        # Incomplete provider evidence must never certify VERIFIED no-split coverage.
+        if not response.response_complete or not depth_ok:
+            if not response.response_complete:
+                status_enum = SplitCoverageStatus.ERROR
+                basis = SPLITS_COVERAGE_ERROR_BASIS
+                error_summary = (
+                    "provider_splits_response_incomplete:"
+                    f"malformed={response.malformed_row_count},"
+                    f"conflicts={len(response.conflicting_dates)}"
+                )
+                # A trusted refresh that cannot validate rows invalidates prior
+                # VERIFIED claims for the same identity/window overlap.
+                self._repo.demote_overlapping_verified_split_coverage(
+                    instrument_id=instrument.instrument_id,
+                    provider=provider_enum,
+                    provider_symbol=resolved_provider_symbol,
+                    window_start=start_date,
+                    window_end=end_date,
+                    reason="split_refresh_response_incomplete",
+                )
+            else:
+                # Out-of-depth requests do not demote narrower prior VERIFIED windows.
+                status_enum = SplitCoverageStatus.UNKNOWN
+                basis = "twelve_data_splits_request_exceeds_certifiable_history"
+                error_summary = (
+                    "split_coverage_depth_unknown:"
+                    f"requested_start={start_date.isoformat()},"
+                    f"certifiable_start={cert_floor.isoformat()}"
+                )
+
+            coverage = self._repo.build_stock_split_coverage(
+                instrument_id=instrument.instrument_id,
+                provider=provider_enum,
+                provider_symbol=resolved_provider_symbol,
+                coverage_start=start_date,
+                coverage_end=end_date,
+                status=status_enum,
+                completeness_basis=basis,
+                limitations=SPLITS_COVERAGE_LIMITATIONS,
+                retrieved_at=retrieved_at,
+                source_metadata={
+                    "event_count": 0,
+                    "malformed_row_count": response.malformed_row_count,
+                    "conflicting_dates": [d.isoformat() for d in response.conflicting_dates],
+                    "response_complete": response.response_complete,
+                    "certifiable_start": cert_floor.isoformat(),
+                    "meta": response.meta,
+                },
+            )
+            self._repo.upsert_stock_split_coverage(coverage)
+            run_status = (
+                MarketDataRunStatus.FAILED
+                if status_enum is SplitCoverageStatus.ERROR
+                else MarketDataRunStatus.PARTIAL
+            )
+            self._repo.complete_market_data_run(
+                run_id,
+                status=run_status,
+                raw_row_count=response.malformed_row_count + len(response.conflicting_dates),
+                rejected_row_count=response.malformed_row_count,
+                error_summary=error_summary,
+            )
+            return SplitIngestionResult(
+                run_id=run_id,
+                provider=provider_enum,
+                instrument_id=instrument.instrument_id,
+                canonical_symbol=instrument.canonical_symbol,
+                provider_symbol=resolved_provider_symbol,
+                requested_start_date=start_date,
+                requested_end_date=end_date,
+                status=run_status,
+                event_count=0,
+                rejected_event_count=response.malformed_row_count,
+                coverage_id=coverage.coverage_id,
+                coverage_status=coverage.status,
+                error_summary=error_summary,
+                warnings=tuple(dict.fromkeys(warnings)),
+            )
+
+        # Full validated response inside certifiable history → atomic replace + VERIFIED.
+        stored_events = []
+        rejected = 0
         for event in response.events:
             try:
                 available_at = modeled_split_available_at(
@@ -695,27 +806,75 @@ class MarketDataService:
             except MarketDataValidationError:
                 rejected += 1
                 continue
-            stored = self._repo.build_stock_split_event(
+            stored_events.append(
+                self._repo.build_stock_split_event(
+                    instrument_id=instrument.instrument_id,
+                    provider=provider_enum,
+                    provider_symbol=resolved_provider_symbol,
+                    effective_date=event.effective_date,
+                    from_factor=event.from_factor,
+                    to_factor=event.to_factor,
+                    share_multiplier=event.share_multiplier,
+                    source_ratio=event.source_ratio,
+                    description=event.description,
+                    available_at=available_at,
+                    retrieved_at=retrieved_at,
+                    source_metadata=event.metadata,
+                )
+            )
+
+        if rejected:
+            # Modeled availability failure after an otherwise complete parse still
+            # invalidates proof of complete coverage for the interval.
+            warnings.append(f"split_available_at_rejected:{rejected}")
+            self._repo.demote_overlapping_verified_split_coverage(
                 instrument_id=instrument.instrument_id,
                 provider=provider_enum,
                 provider_symbol=resolved_provider_symbol,
-                effective_date=event.effective_date,
-                from_factor=event.from_factor,
-                to_factor=event.to_factor,
-                share_multiplier=event.share_multiplier,
-                source_ratio=event.source_ratio,
-                description=event.description,
-                available_at=available_at,
-                retrieved_at=retrieved_at,
-                source_metadata=event.metadata,
+                window_start=start_date,
+                window_end=end_date,
+                reason="split_refresh_availability_incomplete",
             )
-            outcome = self._repo.upsert_stock_split_event(stored)
-            if outcome == "inserted":
-                inserted += 1
-            elif outcome == "updated":
-                updated += 1
-            else:
-                unchanged += 1
+            coverage = self._repo.build_stock_split_coverage(
+                instrument_id=instrument.instrument_id,
+                provider=provider_enum,
+                provider_symbol=resolved_provider_symbol,
+                coverage_start=start_date,
+                coverage_end=end_date,
+                status=SplitCoverageStatus.ERROR,
+                completeness_basis=SPLITS_COVERAGE_ERROR_BASIS,
+                limitations=SPLITS_COVERAGE_LIMITATIONS,
+                retrieved_at=retrieved_at,
+                source_metadata={
+                    "event_count": 0,
+                    "availability_rejected": rejected,
+                    "meta": response.meta,
+                },
+            )
+            self._repo.upsert_stock_split_coverage(coverage)
+            self._repo.complete_market_data_run(
+                run_id,
+                status=MarketDataRunStatus.FAILED,
+                raw_row_count=len(response.events) + response.malformed_row_count,
+                rejected_row_count=rejected,
+                error_summary="split_available_at_modeling_failed",
+            )
+            return SplitIngestionResult(
+                run_id=run_id,
+                provider=provider_enum,
+                instrument_id=instrument.instrument_id,
+                canonical_symbol=instrument.canonical_symbol,
+                provider_symbol=resolved_provider_symbol,
+                requested_start_date=start_date,
+                requested_end_date=end_date,
+                status=MarketDataRunStatus.FAILED,
+                event_count=0,
+                rejected_event_count=rejected,
+                coverage_id=coverage.coverage_id,
+                coverage_status=coverage.status,
+                error_summary="split_available_at_modeling_failed",
+                warnings=tuple(dict.fromkeys(warnings)),
+            )
 
         coverage = self._repo.build_stock_split_coverage(
             instrument_id=instrument.instrument_id,
@@ -728,25 +887,28 @@ class MarketDataService:
             limitations=SPLITS_COVERAGE_LIMITATIONS,
             retrieved_at=retrieved_at,
             source_metadata={
-                "event_count": len(response.events),
+                "event_count": len(stored_events),
+                "certifiable_start": cert_floor.isoformat(),
                 "meta": response.meta,
             },
         )
-        self._repo.upsert_stock_split_coverage(coverage)
-        status = MarketDataRunStatus.SUCCESS
-        if rejected and (inserted + updated + unchanged) == 0 and response.events:
-            status = MarketDataRunStatus.FAILED
-        elif rejected:
-            status = MarketDataRunStatus.PARTIAL
-
+        counts = self._repo.replace_verified_split_window(
+            instrument_id=instrument.instrument_id,
+            provider=provider_enum,
+            provider_symbol=resolved_provider_symbol,
+            window_start=start_date,
+            window_end=end_date,
+            events=stored_events,
+            coverage=coverage,
+        )
         self._repo.complete_market_data_run(
             run_id,
-            status=status,
+            status=MarketDataRunStatus.SUCCESS,
             raw_row_count=len(response.events) + response.malformed_row_count,
-            inserted_row_count=inserted,
-            updated_row_count=updated,
-            unchanged_row_count=unchanged,
-            rejected_row_count=rejected,
+            inserted_row_count=counts.inserted,
+            updated_row_count=counts.updated,
+            unchanged_row_count=counts.unchanged,
+            rejected_row_count=0,
         )
         return SplitIngestionResult(
             run_id=run_id,
@@ -756,12 +918,12 @@ class MarketDataService:
             provider_symbol=resolved_provider_symbol,
             requested_start_date=start_date,
             requested_end_date=end_date,
-            status=status,
-            event_count=len(response.events),
-            inserted_event_count=inserted,
-            updated_event_count=updated,
-            unchanged_event_count=unchanged,
-            rejected_event_count=rejected,
+            status=MarketDataRunStatus.SUCCESS,
+            event_count=len(stored_events),
+            inserted_event_count=counts.inserted,
+            updated_event_count=counts.updated,
+            unchanged_event_count=counts.unchanged,
+            rejected_event_count=0,
             coverage_id=coverage.coverage_id,
             coverage_status=coverage.status,
             warnings=tuple(dict.fromkeys(warnings)),

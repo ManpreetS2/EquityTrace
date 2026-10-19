@@ -17,6 +17,7 @@ from equitytrace.market.market_cap import MarketCapFrequency, MarketCapService
 from equitytrace.market.models import (
     DailyPriceBar,
     MarketDataProviderName,
+    MarketSymbolMapping,
     PriceAdjustmentMode,
     SplitCoverageStatus,
 )
@@ -545,11 +546,14 @@ def test_event_not_eligible_at_as_of(tmp_path: Path, monkeypatch: pytest.MonkeyP
             price_day,
             as_of=future_available,
         )
-    # Coverage is present; event itself is not yet eligible → treat as no event.
-    assert early.market_cap == Decimal("25000000")
-    assert early.split_event_ids == ()
+    # Ineligible effective split is not "no split"; fail closed until eligible.
+    assert early.market_cap is None
+    assert early.unavailable_reason == "split_event_unavailable_at_knowledge_time"
+    # Understated pre-split cap must never become available early.
+    assert early.market_cap != Decimal("25000000")
     assert late.market_cap == Decimal("100000000")
     assert late.split_share_multiplier == Decimal("4")
+    assert SPLIT_HISTORY_NON_VINTAGE_WARNING in late.warnings
 
 
 def test_conflicting_split_events_unavailable(
@@ -897,6 +901,392 @@ def test_valuation_factors_propagate_unavailable(
         )
         assert ranking.valid_count == 0
         assert ranking.excluded
+
+
+def test_malformed_provider_rows_never_verify_no_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP 200 with invalid factors must not certify a no-split interval."""
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    payload = {
+        "meta": {
+            "symbol": "AAA",
+            "exchange_timezone": "America/New_York",
+        },
+        "splits": [
+            {
+                "date": "2023-02-01",
+                "description": "broken split",
+                "ratio": 0.25,
+                # Missing from_factor / to_factor → malformed
+            }
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/splits")
+        return httpx.Response(200, json=payload)
+
+    with db.session() as conn:
+        _seed_issuer(conn)
+        _seed_shares(
+            conn,
+            value=1_000_000,
+            end=date(2023, 1, 1),
+            available=datetime(2023, 1, 2, tzinfo=UTC),
+        )
+        _seed_raw_price(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            trading_date=date(2023, 2, 10),
+            close=Decimal("25"),
+        )
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        ingest = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1)
+        )
+        cap = MarketCapService(conn).get_market_cap("AAA", date(2023, 2, 10))
+
+    assert ingest.coverage_status is SplitCoverageStatus.ERROR
+    assert ingest.status.value == "failed"
+    assert ingest.event_count == 0
+    assert cap.market_cap is None
+    # Understated no-split cap (25 * 1e6) must not become available.
+    assert cap.market_cap != Decimal("25000000")
+    assert cap.unavailable_reason in {
+        "split_coverage_error",
+        "split_coverage_unavailable",
+        "split_coverage_unknown",
+    }
+
+
+def test_mixed_valid_and_invalid_split_rows_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    payload = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [
+            {
+                "date": "2023-02-01",
+                "description": "4-for-1 split",
+                "ratio": 0.25,
+                "from_factor": 4,
+                "to_factor": 1,
+            },
+            {
+                "date": "2023-02-15",
+                "description": "bad row",
+                "ratio": 0.5,
+                "from_factor": 0,
+                "to_factor": 1,
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1)
+        )
+        repo = MarketRepository(conn)
+        instrument = repo.get_instrument_by_symbol("AAA")
+        assert instrument is not None
+        events = repo.list_stock_split_events(instrument.instrument_id)
+        coverage = repo.get_verified_split_coverage(
+            instrument.instrument_id,
+            shares_fact_date=date(2023, 1, 1),
+            price_date=date(2023, 2, 20),
+            provider_symbol="AAA",
+        )
+    assert result.coverage_status is SplitCoverageStatus.ERROR
+    assert result.event_count == 0
+    assert events == []
+    assert coverage is None or coverage.status is not SplitCoverageStatus.VERIFIED
+
+
+def test_conflicting_provider_split_rows_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    payload = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [
+            {
+                "date": "2023-02-01",
+                "description": "4-for-1 split",
+                "ratio": 0.25,
+                "from_factor": 4,
+                "to_factor": 1,
+            },
+            {
+                "date": "2023-02-01",
+                "description": "2-for-1 split",
+                "ratio": 0.5,
+                "from_factor": 2,
+                "to_factor": 1,
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1)
+        )
+    assert result.coverage_status is SplitCoverageStatus.ERROR
+    assert result.event_count == 0
+    assert result.error_summary is not None
+    assert "incomplete" in result.error_summary
+
+
+def test_verified_refresh_removes_stale_event(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    with_event = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [
+            {
+                "date": "2023-02-01",
+                "description": "4-for-1 split",
+                "ratio": 0.25,
+                "from_factor": 4,
+                "to_factor": 1,
+            }
+        ],
+    }
+    empty = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+    state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["n"] += 1
+        return httpx.Response(200, json=with_event if state["n"] == 1 else empty)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        service = MarketDataService(conn, settings, provider=provider)
+        first = service.ingest_splits("AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1))
+        second = service.ingest_splits(
+            "AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1)
+        )
+        repo = MarketRepository(conn)
+        instrument = repo.get_instrument_by_symbol("AAA")
+        assert instrument is not None
+        events = repo.list_stock_split_events(
+            instrument.instrument_id,
+            start_date=date(2023, 1, 1),
+            end_date=date(2023, 3, 1),
+            provider_symbol="AAA",
+        )
+        coverage = repo.get_verified_split_coverage(
+            instrument.instrument_id,
+            shares_fact_date=date(2023, 1, 1),
+            price_date=date(2023, 2, 10),
+            provider_symbol="AAA",
+        )
+    assert first.event_count == 1
+    assert second.event_count == 0
+    assert second.coverage_status is SplitCoverageStatus.VERIFIED
+    assert events == []
+    assert coverage is not None and coverage.status is SplitCoverageStatus.VERIFIED
+
+
+def test_failed_refresh_demotes_verified_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    good = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+    bad = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [{"date": "2023-02-01", "ratio": 0.25}],
+    }
+    state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["n"] += 1
+        return httpx.Response(200, json=good if state["n"] == 1 else bad)
+
+    with db.session() as conn:
+        _seed_issuer(conn)
+        _seed_shares(
+            conn,
+            value=1_000_000,
+            end=date(2023, 1, 1),
+            available=datetime(2023, 1, 2, tzinfo=UTC),
+        )
+        _seed_raw_price(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            trading_date=date(2023, 2, 10),
+            close=Decimal("100"),
+        )
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        service = MarketDataService(conn, settings, provider=provider)
+        first = service.ingest_splits("AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1))
+        before = MarketCapService(conn).get_market_cap("AAA", date(2023, 2, 10))
+        second = service.ingest_splits(
+            "AAA", start_date=date(2023, 1, 1), end_date=date(2023, 3, 1)
+        )
+        after = MarketCapService(conn).get_market_cap("AAA", date(2023, 2, 10))
+    assert first.coverage_status is SplitCoverageStatus.VERIFIED
+    assert before.market_cap == Decimal("100000000")
+    assert second.coverage_status is SplitCoverageStatus.ERROR
+    assert after.market_cap is None
+    assert after.unavailable_reason in {
+        "split_coverage_error",
+        "split_coverage_unavailable",
+        "split_coverage_unknown",
+    }
+
+
+def test_mismatched_provider_symbol_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    with db.session() as conn:
+        _seed_issuer(conn)
+        _seed_shares(
+            conn,
+            value=1_000_000,
+            end=date(2023, 1, 1),
+            available=datetime(2023, 1, 2, tzinfo=UTC),
+        )
+        instrument_id = _seed_raw_price(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            trading_date=date(2023, 2, 10),
+            close=Decimal("100"),
+        )
+        repo = MarketRepository(conn)
+        repo.upsert_symbol_mapping(
+            MarketSymbolMapping(
+                instrument_id=instrument_id,
+                provider=MarketDataProviderName.TWELVE_DATA,
+                provider_symbol="AAA.US",
+                is_primary=True,
+            )
+        )
+        # Coverage/events bound to a different provider symbol than the mapping.
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument_id,
+            coverage_start=date(2023, 1, 1),
+            coverage_end=date(2023, 2, 10),
+            provider_symbol="AAA",
+        )
+        result = MarketCapService(conn).get_market_cap("AAA", date(2023, 2, 10))
+    assert result.market_cap is None
+    assert result.unavailable_reason in {
+        "split_coverage_unavailable",
+        "split_coverage_unknown",
+        "split_provider_symbol_ambiguous",
+    }
+
+
+def test_out_of_certifiable_depth_not_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    payload = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA",
+            start_date=date(2000, 1, 1),
+            end_date=date(2023, 3, 1),
+        )
+    assert result.coverage_status is SplitCoverageStatus.UNKNOWN
+    assert result.status.value == "partial"
+    assert result.error_summary is not None
+    assert "depth_unknown" in result.error_summary
+
+
+def test_effective_date_boundary_inclusive_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Split on price_date is in (fact, price]; day-after is outside the gap."""
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    price_day = date(2023, 2, 1)
+    with db.session() as conn:
+        _seed_issuer(conn)
+        _seed_shares(
+            conn,
+            value=1_000_000,
+            end=date(2023, 1, 1),
+            available=datetime(2023, 1, 2, tzinfo=UTC),
+        )
+        instrument_id = _seed_raw_price(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            trading_date=price_day,
+            close=Decimal("25"),
+        )
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument_id,
+            coverage_start=date(2023, 1, 1),
+            coverage_end=price_day,
+            provider_symbol="AAA",
+        )
+        seed_split_event(
+            conn,
+            instrument_id=instrument_id,
+            provider_symbol="AAA",
+            effective_date=price_day,
+            from_factor=4,
+            to_factor=1,
+            description="4-for-1 split",
+            source_ratio="0.25",
+        )
+        on_price_day = MarketCapService(conn).get_market_cap("AAA", price_day)
+        # Event strictly after price_date must not adjust the share basis.
+        seed_split_event(
+            conn,
+            instrument_id=instrument_id,
+            provider_symbol="AAA",
+            effective_date=price_day + timedelta(days=1),
+            from_factor=2,
+            to_factor=1,
+            description="2-for-1 split",
+            source_ratio="0.5",
+        )
+        still = MarketCapService(conn).get_market_cap("AAA", price_day)
+    assert on_price_day.market_cap == Decimal("100000000")
+    assert on_price_day.split_share_multiplier == Decimal("4")
+    assert still.market_cap == Decimal("100000000")
+    assert still.split_share_multiplier == Decimal("4")
 
 
 def test_migration_adds_split_tables_idempotently(tmp_path: Path) -> None:

@@ -128,25 +128,31 @@ def events_in_gap(
     price_date: date,
     knowledge_time: datetime,
 ) -> tuple[tuple[StockSplitEvent, ...], str | None]:
-    """Select PIT-eligible events in (fact_date, price_date]; detect conflicts."""
+    """Select PIT-eligible events in (fact_date, price_date]; detect conflicts.
+
+    A stored effective split that is not yet eligible at ``knowledge_time`` is
+    not treated as absent. Coverage alone cannot certify the pre-split share
+    basis while such an event remains ineligible.
+    """
+    candidates = [
+        event
+        for event in sorted(events, key=lambda e: (e.effective_date, e.event_id))
+        if shares_fact_date < event.effective_date <= price_date
+    ]
     by_date: dict[date, StockSplitEvent] = {}
-    selected: list[StockSplitEvent] = []
-    for event in sorted(events, key=lambda e: (e.effective_date, e.event_id)):
-        if event.effective_date <= shares_fact_date:
-            continue
-        if event.effective_date > price_date:
-            continue
-        if event.available_at > knowledge_time:
-            continue
+    for event in candidates:
         prior = by_date.get(event.effective_date)
         if prior is not None and prior.share_multiplier != event.share_multiplier:
             return (), "conflicting_split_events"
-        if prior is not None:
-            # Identical duplicate on the same effective date: keep the first id.
-            continue
-        by_date[event.effective_date] = event
-        selected.append(event)
-    return tuple(selected), None
+        if prior is None:
+            by_date[event.effective_date] = event
+
+    for event in by_date.values():
+        if event.available_at > knowledge_time:
+            return (), "split_event_unavailable_at_knowledge_time"
+
+    selected = tuple(by_date[d] for d in sorted(by_date))
+    return selected, None
 
 
 def cumulative_share_multiplier(events: tuple[StockSplitEvent, ...]) -> Decimal:
@@ -185,7 +191,9 @@ def reconcile_share_basis(
         price_date=price_date,
     ):
         reason = "split_coverage_unavailable"
-        if coverage is not None and coverage.status.value == "unknown":
+        if coverage is not None and coverage.status.value == "error":
+            reason = "split_coverage_error"
+        elif coverage is not None and coverage.status.value == "unknown":
             reason = "split_coverage_unknown"
         elif coverage is not None and coverage.coverage_end < price_date:
             reason = "split_coverage_ends_before_price_date"

@@ -58,14 +58,32 @@ _SUPPORTED_ADJUST = {
     PriceAdjustmentMode.NONE: "none",
     PriceAdjustmentMode.ALL: "all",
 }
-# Completeness basis recorded when a bounded /splits request succeeds.
-SPLITS_COVERAGE_BASIS = "twelve_data_splits_requested_range_verified"
+# Completeness basis when a bounded /splits response is fully validated and the
+# certified window lies inside the conservative marketed history depth.
+SPLITS_COVERAGE_BASIS = "twelve_data_splits_validated_range_within_certifiable_history"
+SPLITS_COVERAGE_ERROR_BASIS = "twelve_data_splits_response_incomplete"
+# Twelve Data markets corporate-action fundamentals at roughly 10+ years.
+# EquityTrace certifies only the conservative 10-year floor from the request end.
+TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS = 10
 SPLITS_COVERAGE_LIMITATIONS = (
-    "coverage_limited_to_requested_start_end",
+    "coverage_limited_to_validated_certifiable_window",
     "split_history_retrospectively_retrieved_not_vendor_vintage_pit",
     "empty_event_list_is_valid_only_inside_verified_coverage",
     "twelve_data_splits_requires_grow_or_venture_plan",
+    "certifiable_history_capped_at_ten_years_from_request_end",
 )
+
+
+def certifiable_splits_start(end_date: date) -> date:
+    """Earliest date EquityTrace will certify for a Twelve Data splits window."""
+    year = end_date.year - TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS
+    if year < 1:
+        return date(1, 1, 1)
+    try:
+        return end_date.replace(year=year)
+    except ValueError:
+        # e.g. Feb 29 → Feb 28 in non-leap target years
+        return end_date.replace(year=year, day=28)
 
 
 def _redact(text: str, api_key: str) -> str:
@@ -391,23 +409,34 @@ class TwelveDataProvider:
         }
         cache_params = {"endpoint": "splits", **params}
         if self._settings.enable_cache:
-            cached = self._read_cache(cache_params)
+            cached = self._read_splits_cache(cache_params)
             if cached is not None:
-                return self._parse_splits_payload(
+                parsed = self._parse_splits_payload(
                     cached,
                     symbol=symbol,
                     start_date=start_date,
                     end_date=end_date,
                 )
+                # Never re-certify incomplete cached evidence.
+                if parsed.response_complete:
+                    return parsed
+                with contextlib.suppress(OSError):
+                    self._cache_path(cache_params).unlink(missing_ok=True)
         payload = self._request_json(TWELVE_DATA_SPLITS_URL, params)
-        if self._settings.enable_cache and _is_cacheable_splits_success(payload):
-            self._write_cache(cache_params, payload)
-        return self._parse_splits_payload(
+        parsed = self._parse_splits_payload(
             payload,
             symbol=symbol,
             start_date=start_date,
             end_date=end_date,
         )
+        # Cache only after semantic validation succeeds with zero malformed rows.
+        if (
+            self._settings.enable_cache
+            and parsed.response_complete
+            and _is_cacheable_splits_success(payload)
+        ):
+            self._write_cache(cache_params, payload)
+        return parsed
 
     def _request_json(self, url: str, params: dict[str, str]) -> dict[str, Any]:
         attempts = max(1, self._settings.market_data_max_retries)
@@ -551,13 +580,11 @@ class TwelveDataProvider:
             del by_date[event.effective_date]
             conflicting.add(event.effective_date)
 
-        if conflicting:
-            raise MarketDataValidationError(
-                "Twelve Data returned conflicting split events on "
-                + ", ".join(d.isoformat() for d in sorted(conflicting))
-            )
-
-        events = tuple(by_date[d] for d in sorted(by_date))
+        conflict_dates = tuple(sorted(conflicting))
+        # Malformed or conflicting rows invalidate proof of complete coverage.
+        # Zero successfully parsed events is then NOT proof of zero provider events.
+        response_complete = malformed == 0 and not conflict_dates
+        events = tuple(by_date[d] for d in sorted(by_date)) if response_complete else ()
         return ProviderSplitsResponse(
             provider=MarketDataProviderName.TWELVE_DATA,
             provider_symbol=symbol,
@@ -568,7 +595,8 @@ class TwelveDataProvider:
             meta={k: v for k, v in meta.items() if "key" not in str(k).lower()},
             malformed_row_count=malformed,
             duplicate_row_count=duplicate_rows,
-            conflicting_dates=(),
+            conflicting_dates=conflict_dates,
+            response_complete=response_complete,
         )
 
     def _parse_payload(
@@ -701,6 +729,24 @@ class TwelveDataProvider:
             return None
         if not isinstance(payload, dict) or not _is_cacheable_success(payload):
             logger.warning("Ignoring non-success market cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None
+        return payload
+
+    def _read_splits_cache(self, params: dict[str, str]) -> dict[str, Any] | None:
+        path = self._cache_path(params)
+        if not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Ignoring corrupt splits cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None
+        if not isinstance(payload, dict) or not _is_cacheable_splits_success(payload):
+            logger.warning("Ignoring non-success splits cache file %s", path.name)
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
             return None
