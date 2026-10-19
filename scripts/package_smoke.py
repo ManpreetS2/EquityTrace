@@ -241,7 +241,7 @@ print("SKFOLIO", pkg_version("skfolio"))
                     raise SystemExit(f"market help missing analytics:\n{extra_out}")
                 if extra_args[0] == "research":
                     lowered = extra_out.lower()
-                    for command in ("validate", "run", "show"):
+                    for command in ("validate", "run", "show", "report", "export"):
                         if command not in lowered:
                             raise SystemExit(f"research help missing {command}:\n{extra_out}")
 

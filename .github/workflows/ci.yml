@@ -124,3 +124,4 @@ jobs:
           tests/test_portfolio_backtest.py::test_top_n_cutoff_does_not_include_extra_ties
           tests/test_portfolio_backtest.py::test_min_variance_deterministic_under_hash_seed
           tests/test_strategy.py::test_fingerprint_deterministic_under_hash_seed
+          tests/test_research_reporting.py::test_report_determinism_under_hash_seed
