@@ -125,6 +125,8 @@ def _add_price(
     currency: str = "USD",
     available_at: datetime | None = None,
 ) -> None:
+    from helpers.split_coverage import seed_verified_split_coverage
+
     repo = MarketRepository(conn)  # type: ignore[arg-type]
     instrument = repo.get_or_create_instrument(ticker, issuer_cik=cik, security_ticker=ticker)
     fetched = datetime(2024, 1, 1, tzinfo=UTC)
@@ -160,6 +162,14 @@ def _add_price(
                 fetched_at=fetched,
             ),
         ]
+    )
+    # Explicit synthetic no-split coverage for the default shares→price gap.
+    seed_verified_split_coverage(
+        conn,
+        instrument_id=instrument.instrument_id,
+        coverage_start=date(2023, 11, 1),
+        coverage_end=trading_date,
+        provider_symbol=ticker,
     )
 
 
