@@ -110,7 +110,7 @@ def test_outputsize_omitted_when_start_and_end_present(
         )
     assert seen
     assert "outputsize" not in seen[0]
-    assert "apikey" in seen[0]
+    assert "apikey" not in seen[0]
     assert seen[0]["start_date"] == ["2023-01-01"]
     assert seen[0]["end_date"] == ["2023-01-10"]
 

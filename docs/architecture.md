@@ -32,7 +32,9 @@ Presentation/HTML report — future (v1.0 Milestone 2)
 
 3. **SEC client (`equitytrace.sec.client`)**
    HTTPX client with identifying User-Agent, rate limiting, retries, optional
-   disk cache, and injectable transport for offline tests.
+   disk cache with a mutable-endpoint TTL (default 24h) plus immutable archive
+   policy, `force_refresh` / `ingest --refresh`, and injectable transport for
+   offline tests.
 
 4. **Endpoint helpers**
    - `tickers.py` — company_tickers.json resolution

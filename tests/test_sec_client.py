@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
 from equitytrace.config import ConfigurationError, Settings, clear_settings_cache
-from equitytrace.sec.client import COMPANY_TICKERS_URL, RetryableSecError, SecClient, SecHttpError
+from equitytrace.sec.client import (
+    COMPANY_FACTS_URL,
+    COMPANY_TICKERS_URL,
+    SUBMISSIONS_ARCHIVE_BASE,
+    SUBMISSIONS_URL,
+    RetryableSecError,
+    SecClient,
+    SecHttpError,
+)
 
 
 def test_missing_sec_email_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,3 +107,227 @@ def test_timeout_is_retryable(settings: Settings) -> None:
         pytest.raises(RetryableSecError, match="Timeout"),
     ):
         client.get_json(COMPANY_TICKERS_URL, use_cache=False)
+
+
+def test_mutable_cache_hit_within_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    monkeypatch.setenv("EQUITYTRACE_SEC_CACHE_TTL_SECONDS", "3600")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"ok": True, "n": calls["n"]})
+
+    url = "https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json"
+    with SecClient(settings, transport=httpx.MockTransport(handler)) as client:
+        first = client.get_json(url)
+        second = client.get_json(url)
+    assert first == {"ok": True, "n": 1}
+    assert second == {"ok": True, "n": 1}
+    assert calls["n"] == 1
+
+
+def test_expired_cache_triggers_refetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    monkeypatch.setenv("EQUITYTRACE_SEC_CACHE_TTL_SECONDS", "60")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"ok": True, "n": calls["n"]})
+
+    url = SUBMISSIONS_URL.format(cik="0000320193")
+    with SecClient(settings, transport=httpx.MockTransport(handler)) as client:
+        first = client.get_json(url)
+        cache_path = next(settings.cache_dir.glob("*.json"))
+        # Backdate mtime beyond TTL.
+        import os
+        import time
+
+        past = time.time() - 120
+        os.utime(cache_path, (past, past))
+        second = client.get_json(url)
+        assert client.cache_stats.expired_skips >= 1
+    assert first == {"ok": True, "n": 1}
+    assert second == {"ok": True, "n": 2}
+    assert calls["n"] == 2
+
+
+def test_force_refresh_bypasses_valid_cache_and_replaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    monkeypatch.setenv("EQUITYTRACE_SEC_CACHE_TTL_SECONDS", "86400")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"ok": True, "n": calls["n"]})
+
+    url = COMPANY_TICKERS_URL
+    transport = httpx.MockTransport(handler)
+    with SecClient(settings, transport=transport) as client:
+        first = client.get_json(url)
+    with SecClient(settings, transport=transport, force_refresh=True) as client:
+        refreshed = client.get_json(url)
+        assert client.cache_stats.forced_refreshes >= 1
+        assert client.cache_stats.network_fetches == 1
+    with SecClient(settings, transport=transport) as client:
+        cached = client.get_json(url)
+    assert first == {"ok": True, "n": 1}
+    assert refreshed == {"ok": True, "n": 2}
+    assert cached == {"ok": True, "n": 2}  # refresh replaced cache
+    assert calls["n"] == 2
+
+
+def test_failed_refresh_does_not_return_expired_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    monkeypatch.setenv("EQUITYTRACE_SEC_CACHE_TTL_SECONDS", "30")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    state = {"mode": "ok"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if state["mode"] == "ok":
+            return httpx.Response(200, json={"ok": True, "version": 1})
+        return httpx.Response(503, text="unavailable")
+
+    url = COMPANY_FACTS_URL.format(cik="0000320193")
+    transport = httpx.MockTransport(handler)
+    with SecClient(settings, transport=transport) as client:
+        assert client.get_json(url) == {"ok": True, "version": 1}
+        cache_path = next(settings.cache_dir.glob("*.json"))
+        import os
+        import time
+
+        past = time.time() - 120
+        os.utime(cache_path, (past, past))
+
+    state["mode"] = "fail"
+    with (
+        SecClient(settings, transport=transport) as client,
+        pytest.raises(RetryableSecError),
+    ):
+        client.get_json(url)
+
+
+def test_corrupt_cache_refetches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"ok": True, "n": calls["n"]})
+
+    url = "https://data.sec.gov/example-corrupt.json"
+    with SecClient(settings, transport=httpx.MockTransport(handler)) as client:
+        client.get_json(url)
+        cache_path = next(settings.cache_dir.glob("*.json"))
+        cache_path.write_text("{not-json", encoding="utf-8")
+        recovered = client.get_json(url)
+    assert recovered == {"ok": True, "n": 2}
+    assert calls["n"] == 2
+
+
+def test_archive_cache_is_immutable_by_age(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    monkeypatch.setenv("EQUITYTRACE_SEC_CACHE_TTL_SECONDS", "1")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"archive": True, "n": calls["n"]})
+
+    url = f"{SUBMISSIONS_ARCHIVE_BASE}CIK0000320193-submissions-001.json"
+    with SecClient(settings, transport=httpx.MockTransport(handler)) as client:
+        first = client.get_json(url)
+        cache_path = next(settings.cache_dir.glob("*.json"))
+        import os
+        import time
+
+        past = time.time() - 10_000
+        os.utime(cache_path, (past, past))
+        second = client.get_json(url)
+    assert first == second == {"archive": True, "n": 1}
+    assert calls["n"] == 1
+
+
+def test_company_tickers_submissions_facts_obey_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    monkeypatch.setenv("EQUITYTRACE_SEC_CACHE_TTL_SECONDS", "45")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls: dict[str, int] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        calls[url] = calls.get(url, 0) + 1
+        return httpx.Response(200, json={"url": url, "n": calls[url]})
+
+    urls = [
+        COMPANY_TICKERS_URL,
+        SUBMISSIONS_URL.format(cik="0000320193"),
+        COMPANY_FACTS_URL.format(cik="0000320193"),
+    ]
+    transport = httpx.MockTransport(handler)
+    with SecClient(settings, transport=transport) as client:
+        for url in urls:
+            client.get_json(url)
+        import os
+        import time
+
+        past = time.time() - 120
+        for path in settings.cache_dir.glob("*.json"):
+            os.utime(path, (past, past))
+        for url in urls:
+            client.get_json(url)
+    assert all(calls[url] == 2 for url in urls)
+
+
+def test_no_unbounded_requests_on_cache_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EQUITYTRACE_SEC_EMAIL", "tests@example.com")
+    monkeypatch.setenv("EQUITYTRACE_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"ok": True})
+
+    url = COMPANY_TICKERS_URL
+    with SecClient(settings, transport=httpx.MockTransport(handler)) as client:
+        for _ in range(5):
+            client.get_json(url)
+    assert calls["n"] == 1

@@ -130,11 +130,15 @@ class TwelveDataProvider:
             monotonic_fn=monotonic_fn,
         )
         self._owns_client = client is None
+        self._auth_header = f"apikey {key}"
         self._client = client or httpx.Client(
             timeout=settings.market_data_timeout_seconds,
             transport=transport,
             follow_redirects=True,
-            headers={"Accept": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Authorization": self._auth_header,
+            },
         )
         if settings.enable_cache:
             settings.market_data_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -320,6 +324,7 @@ class TwelveDataProvider:
     ) -> DailyBarsResponse:
         # Prefer omitting outputsize when both start_date and end_date are set.
         # Twelve Data may silently truncate when outputsize is combined with a range.
+        # Auth is sent only via Authorization header — never as a query parameter.
         params = {
             "symbol": symbol,
             "interval": "1day",
@@ -327,11 +332,9 @@ class TwelveDataProvider:
             "end_date": end_date.isoformat(),
             "adjust": _SUPPORTED_ADJUST[adjustment_mode],
             "order": "ASC",
-            "apikey": self._api_key,
         }
-        cache_key_params = {k: v for k, v in params.items() if k != "apikey"}
         if self._settings.enable_cache:
-            cached = self._read_cache(cache_key_params)
+            cached = self._read_cache(params)
             if cached is not None:
                 return self._parse_payload(
                     cached,
@@ -341,7 +344,7 @@ class TwelveDataProvider:
 
         payload = self._request_json(params)
         if self._settings.enable_cache and _is_cacheable_success(payload):
-            self._write_cache(cache_key_params, payload)
+            self._write_cache(params, payload)
         return self._parse_payload(
             payload,
             symbol=symbol,
@@ -359,10 +362,14 @@ class TwelveDataProvider:
         )
         def _once() -> dict[str, Any]:
             self._rate_limiter.wait()
-            safe_qs = urlencode({k: v for k, v in params.items() if k != "apikey"})
+            safe_qs = urlencode(params)
             logger.debug("GET %s?%s", TWELVE_DATA_TIME_SERIES_URL, safe_qs)
             try:
-                response = self._client.get(TWELVE_DATA_TIME_SERIES_URL, params=params)
+                response = self._client.get(
+                    TWELVE_DATA_TIME_SERIES_URL,
+                    params=params,
+                    headers={"Authorization": self._auth_header},
+                )
             except httpx.TimeoutException as exc:
                 raise MarketDataTransientError("Twelve Data request timed out.") from exc
             except httpx.TransportError as exc:

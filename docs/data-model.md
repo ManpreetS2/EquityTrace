@@ -106,11 +106,25 @@ derives it from the current display symbol.
 SPY and other benchmarks can exist as ETF/index instruments without an SEC
 issuer link. Equities preferably link to `securities` / `issuers` when present.
 
+### SEC response cache
+
+Optional local cache under `EQUITYTRACE_CACHE_DIR` (default `data/cache`).
+Mutable SEC endpoints (`company_tickers`, live CIK submissions, Company Facts)
+honor `EQUITYTRACE_SEC_CACHE_TTL_SECONDS` (default 86400 = 24 hours) based on
+cache-file mtime. Expired entries are never returned; a network fetch is
+required, and transient SEC failures fail the request instead of silently
+serving stale data. Historical archived submissions files are cached immutably
+(no age expiry) but are still replaced on a successful `ingest --refresh`.
+Cache freshness is independent of point-in-time `available_at` on financial
+facts. Corrupt cache files are ignored and replaced. Disable
+`EQUITYTRACE_ENABLE_CACHE` to skip the cache entirely.
+
 ### Market response cache
 
 Optional local cache under `EQUITYTRACE_MARKET_DATA_CACHE_DIR` (default
 `data/cache/market`). Cache keys include provider, symbol, interval, date
-range, and adjustment mode — never the API key. Only successful payloads with a
+range, and adjustment mode — never the API key. Authentication uses the
+`Authorization: apikey <key>` header only. Only successful payloads with a
 `values` list are cached; error payloads are not. There is no TTL: disable
 `EQUITYTRACE_ENABLE_CACHE` to force fresh provider fetches when corrections must
 be observed immediately. Corrupt cache files are ignored and replaced.

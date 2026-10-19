@@ -181,6 +181,7 @@ Preferred names:
 | `EQUITYTRACE_DATABASE_PATH` | DuckDB path (default: `data/equitytrace.duckdb`) |
 | `EQUITYTRACE_CACHE_DIR` | Optional HTTP cache directory |
 | `EQUITYTRACE_ENABLE_CACHE` | Enable SEC/market response caching (default: true) |
+| `EQUITYTRACE_SEC_CACHE_TTL_SECONDS` | Max age for mutable SEC cache entries (default: 86400 = 24h) |
 | `EQUITYTRACE_HTTP_TIMEOUT_SECONDS` | Request timeout |
 | `EQUITYTRACE_MAX_REQUESTS_PER_SECOND` | Rate limit (< 10) |
 | `EQUITYTRACE_MARKET_DATA_PROVIDER` | Market provider id (default: `twelve_data`) |
@@ -209,6 +210,7 @@ email or network access.
 ```bash
 uv run equitytrace resolve AAPL
 uv run equitytrace ingest AAPL
+uv run equitytrace ingest AAPL --refresh
 uv run equitytrace filings AAPL --form 10-K --limit 20
 uv run equitytrace facts AAPL --concept Revenue --limit 20
 uv run equitytrace facts-as-of AAPL --date 2024-01-15
@@ -281,9 +283,12 @@ closes for market cap.
 Share-class ambiguity (for example Alphabet) returns **unavailable** rather than
 a fabricated class-level market cap.
 
-Configure Twelve Data with `EQUITYTRACE_TWELVE_DATA_API_KEY`. Review the
-provider’s licensing before redistribution, display, or commercial use. Live
-responses and caches stay under ignored `data/` paths and are never committed.
+Configure Twelve Data with `EQUITYTRACE_TWELVE_DATA_API_KEY`. The key is sent
+only as an `Authorization: apikey <key>` header — never as a URL query
+parameter — and CLI logging keeps `httpx`/`httpcore` at WARNING even with
+`--verbose`. Review the provider’s licensing before redistribution, display, or
+commercial use. Live responses and caches stay under ignored `data/` paths and
+are never committed.
 
 ```bash
 uv run equitytrace market ingest AAPL --start 2020-01-01 --end 2024-12-31
@@ -316,6 +321,14 @@ SEC-only commands continue to work without a market-data API key.
 - Multi-class detection uses distinct tickers linked to one issuer CIK; the
   securities table has no share-class/active flag, so detection is conservative
 - Optional market response cache has no TTL; disable cache to force fresh fetches
+- SEC mutable endpoints (`company_tickers`, live submissions, Company Facts)
+  honor `EQUITYTRACE_SEC_CACHE_TTL_SECONDS` (default 24h). Expired cache is never
+  reused; if the SEC is unavailable the request fails rather than serving stale
+  data. `equitytrace ingest --refresh` forces a network fetch and replaces the
+  cache on success. Historical archived submissions use an immutable cache
+  (still refreshable via `--refresh`). Cache age is not the same as PIT
+  `available_at` on financial facts — cached HTTP payloads can lag live SEC by
+  up to the TTL window.
 - Live Twelve Data responses are not exercised in CI (offline fixtures only)
 - Period selection uses period-end date and duration heuristics; unusual fiscal
   calendars may still warn
