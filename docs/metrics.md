@@ -18,11 +18,78 @@ These live under `src/equitytrace/factors/` and use `FactorEngine` /
 * knowledge time = `as_of`
 * raw close only
 * PIT SEC shares, staleness, multi-class refusal
+* **split-safe share basis** over `(shares_fact_date, price_date]`
 
 `--market-cap` remains a manual override and is labeled
 `manual_market_cap_override` (not stored market-data provenance).
 
 Canonical financials are USD. A non-USD market-cap currency is unavailable.
+
+### Stock splits and market cap (issue #22)
+
+Market cap is `raw close × reconciled shares`, not raw close × unadjusted SEC
+shares when a split changes the share basis between the selected shares fact
+and the raw price date.
+
+**Required evidence**
+
+* Verified stock-split **events** (instrument, provider symbol, effective date,
+  exact `from_factor` / `to_factor` share multiplier, provenance, retrieval time)
+* Independently stored **coverage** for a bounded interval. An empty event list
+  does **not** mean “no splits occurred”; only a verified coverage row may
+  certify that no event fell inside its window.
+
+**Rules**
+
+* Interval under review: `(shares_fact_date, raw_price_date]`
+* If that interval is empty (`fact_date == price_date`), no split check is needed
+* Otherwise require verified coverage fully containing the interval
+* Apply cumulative `from_factor / to_factor` multipliers for PIT-eligible events
+  in the interval (Twelve Data’s documented 4-for-1 example uses
+  `from_factor=4`, `to_factor=1`, `ratio=0.25` → share multiplier **4**, not 0.25)
+* Preserve original SEC shares; expose reconciled shares and event ids
+* Never infer splits from `adjustment_mode=all` vs raw prices or large moves
+* `PriceAdjustmentMode.SPLITS` remains reserved and is not a live series mode
+
+**Event eligibility**
+
+* Effective date is when the share basis changes
+* Research eligibility uses a modeled end-of-session convention
+  (`available_at` = exchange-local 16:15 on the effective date), labeled as a
+  convention — not the vendor’s real announcement timestamp
+* `retrieved_at` is when EquityTrace fetched the history; retrospectively
+  obtained `/splits` data is **not** vendor-vintage PIT
+* Warnings: `split_history_not_vendor_vintage_pit`,
+  `split_available_at_modeled_eod_convention`
+
+**Unavailable reasons (deterministic)**
+
+* `split_coverage_unavailable` — no verified coverage for the gap
+* `split_coverage_unknown` — coverage row present but not verified
+* `split_coverage_error` — coverage row present but marked error/incomplete
+* `split_coverage_starts_too_late` / `split_coverage_ends_before_price_date`
+* `conflicting_split_events` — same effective date, disagreeing multipliers
+* `split_event_unavailable_at_knowledge_time` — an effective split in the gap
+  is not yet eligible at the research cutoff (never reinterpreted as no-split)
+* `split_provider_symbol_ambiguous` — mapping gap or multi-symbol identity over
+  the gap
+
+When market cap is unavailable for these reasons, `fcf_yield`,
+`price_to_earnings`, `price_to_sales`, and `price_to_book` stay unavailable;
+ranking excludes them; backtest signal selection fails closed.
+
+**Ingestion**
+
+* Explicit CLI: `equitytrace market ingest-splits SYMBOL --start … --end …`
+* Twelve Data `GET /splits` (Grow/Venture+; ~20 credits/symbol). Not called
+  during factor calculation. Plan denial / auth failure / malformed rows /
+  conflicting rows write no VERIFIED coverage (fail closed). Empty parsed
+  events certify “no splits” only when the full response validated cleanly.
+* Completeness uses a conservative 10-year floor measured from the trusted
+  provider retrieval timestamp (Twelve Data `/splits` documents `start_date` /
+  `end_date` / `range`, but not a hard completeness SLA). Requested windows that
+  start before that floor, end after retrieval, or lack stamped retrieval
+  provenance stay UNKNOWN — never VERIFIED from an arbitrary request end date.
 
 ### FCF yield (`fcf_yield`)
 
