@@ -85,8 +85,11 @@ ranking excludes them; backtest signal selection fails closed.
   during factor calculation. Plan denial / auth failure / malformed rows /
   conflicting rows write no VERIFIED coverage (fail closed). Empty parsed
   events certify “no splits” only when the full response validated cleanly.
-* Completeness is capped at a conservative 10-year certifiable floor from the
-  request end (Twelve Data markets ~10+ years). Wider requests stay UNKNOWN.
+* Completeness uses a conservative 10-year floor measured from the trusted
+  provider retrieval timestamp (Twelve Data `/splits` documents `start_date` /
+  `end_date` / `range`, but not a hard completeness SLA). Requested windows that
+  start before that floor, end after retrieval, or lack stamped retrieval
+  provenance stay UNKNOWN — never VERIFIED from an arbitrary request end date.
 
 ### FCF yield (`fcf_yield`)
 

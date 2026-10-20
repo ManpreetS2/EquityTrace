@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 
 import duckdb
 
@@ -706,14 +706,58 @@ class MarketDataService:
                 + ",".join(d.isoformat() for d in response.conflicting_dates)
             )
 
-        retrieved_at = utc_now()
-        cert_floor = certifiable_splits_start(end_date)
-        depth_ok = start_date >= cert_floor
-        if not depth_ok:
-            warnings.append(
-                "request_exceeds_certifiable_split_history:"
-                f"earliest_certifiable={cert_floor.isoformat()}"
+        # Coverage depth is anchored to trusted provider retrieval provenance —
+        # never to the caller's requested end_date (which can be historical or
+        # future and does not establish actual provider history).
+        ingest_observed_at = utc_now()
+        provider_retrieved_at = response.provider_retrieved_at
+        provenance_trusted = (
+            response.retrieval_provenance_trusted and provider_retrieved_at is not None
+        )
+        cert_floor: date | None = None
+        retrieval_day: date | None = None
+        depth_ok = False
+        depth_reason = "split_coverage_depth_unknown"
+        if provenance_trusted and provider_retrieved_at is not None:
+            retrieved_utc = (
+                provider_retrieved_at.astimezone(UTC)
+                if provider_retrieved_at.tzinfo is not None
+                else provider_retrieved_at.replace(tzinfo=UTC)
             )
+            retrieval_day = retrieved_utc.date()
+            cert_floor = certifiable_splits_start(retrieved_utc)
+            if start_date < cert_floor:
+                depth_reason = "split_coverage_depth_unknown"
+                warnings.append(
+                    "request_exceeds_certifiable_split_history:"
+                    f"earliest_certifiable={cert_floor.isoformat()},"
+                    f"provider_retrieved_at={retrieved_utc.isoformat()}"
+                )
+            elif end_date > retrieval_day:
+                # Future request ends must not invent post-retrieval coverage.
+                depth_reason = "split_coverage_future_end_unsupported"
+                warnings.append(
+                    "request_end_after_provider_retrieval:"
+                    f"requested_end={end_date.isoformat()},"
+                    f"provider_retrieved_day={retrieval_day.isoformat()}"
+                )
+            else:
+                depth_ok = True
+        else:
+            depth_reason = "split_coverage_retrieval_provenance_untrusted"
+            warnings.append("split_retrieval_provenance_untrusted_or_missing")
+
+        # Persist coverage.retrieved_at as trusted provider time when available;
+        # otherwise record ingest observation time without claiming provenance.
+        retrieved_at = (
+            (
+                provider_retrieved_at.astimezone(UTC)
+                if provider_retrieved_at.tzinfo is not None
+                else provider_retrieved_at.replace(tzinfo=UTC)
+            )
+            if provenance_trusted and provider_retrieved_at is not None
+            else ingest_observed_at
+        )
 
         # Incomplete provider evidence must never certify VERIFIED no-split coverage.
         if not response.response_complete or not depth_ok:
@@ -736,13 +780,23 @@ class MarketDataService:
                     reason="split_refresh_response_incomplete",
                 )
             else:
-                # Out-of-depth requests do not demote narrower prior VERIFIED windows.
+                # Out-of-depth / untrusted-provenance requests do not demote
+                # narrower prior VERIFIED windows.
                 status_enum = SplitCoverageStatus.UNKNOWN
-                basis = "twelve_data_splits_request_exceeds_certifiable_history"
+                if not provenance_trusted:
+                    basis = "twelve_data_splits_retrieval_provenance_untrusted"
+                elif end_date > (retrieval_day or date.min):
+                    basis = "twelve_data_splits_request_end_after_provider_retrieval"
+                else:
+                    basis = "twelve_data_splits_request_exceeds_certifiable_history"
                 error_summary = (
-                    "split_coverage_depth_unknown:"
+                    f"{depth_reason}:"
                     f"requested_start={start_date.isoformat()},"
-                    f"certifiable_start={cert_floor.isoformat()}"
+                    f"requested_end={end_date.isoformat()},"
+                    f"certifiable_start="
+                    f"{cert_floor.isoformat() if cert_floor is not None else 'unknown'},"
+                    f"provider_retrieved_day="
+                    f"{retrieval_day.isoformat() if retrieval_day is not None else 'unknown'}"
                 )
 
             coverage = self._repo.build_stock_split_coverage(
@@ -760,7 +814,13 @@ class MarketDataService:
                     "malformed_row_count": response.malformed_row_count,
                     "conflicting_dates": [d.isoformat() for d in response.conflicting_dates],
                     "response_complete": response.response_complete,
-                    "certifiable_start": cert_floor.isoformat(),
+                    "certifiable_start": (
+                        cert_floor.isoformat() if cert_floor is not None else None
+                    ),
+                    "provider_retrieved_at": (
+                        retrieved_at.isoformat() if provenance_trusted else None
+                    ),
+                    "retrieval_provenance_trusted": provenance_trusted,
                     "meta": response.meta,
                 },
             )
@@ -876,6 +936,7 @@ class MarketDataService:
                 warnings=tuple(dict.fromkeys(warnings)),
             )
 
+        assert cert_floor is not None  # depth_ok implies trusted retrieval floor
         coverage = self._repo.build_stock_split_coverage(
             instrument_id=instrument.instrument_id,
             provider=provider_enum,
@@ -889,6 +950,8 @@ class MarketDataService:
             source_metadata={
                 "event_count": len(stored_events),
                 "certifiable_start": cert_floor.isoformat(),
+                "provider_retrieved_at": retrieved_at.isoformat(),
+                "retrieval_provenance_trusted": True,
                 "meta": response.meta,
             },
         )

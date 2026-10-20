@@ -44,6 +44,7 @@ from equitytrace.market.providers.errors import (
     MarketDataValidationError,
 )
 from equitytrace.market.splits import SplitRatioError, parse_split_ratio
+from equitytrace.models import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -59,31 +60,48 @@ _SUPPORTED_ADJUST = {
     PriceAdjustmentMode.ALL: "all",
 }
 # Completeness basis when a bounded /splits response is fully validated and the
-# certified window lies inside the conservative marketed history depth.
+# certified window lies inside the conservative history depth anchored at
+# provider retrieval time (not the caller's requested end_date).
 SPLITS_COVERAGE_BASIS = "twelve_data_splits_validated_range_within_certifiable_history"
 SPLITS_COVERAGE_ERROR_BASIS = "twelve_data_splits_response_incomplete"
-# Twelve Data markets corporate-action fundamentals at roughly 10+ years.
-# EquityTrace certifies only the conservative 10-year floor from the request end.
+# Twelve Data /splits accepts start_date/end_date and range (incl. full). Official
+# docs do not publish a hard completeness SLA; EquityTrace uses a conservative
+# 10-year floor measured from the live retrieval timestamp.
 TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS = 10
+_SPLITS_CACHE_ENVELOPE_KEY = "equitytrace_splits_cache"
+_SPLITS_CACHE_SCHEMA = 1
 SPLITS_COVERAGE_LIMITATIONS = (
     "coverage_limited_to_validated_certifiable_window",
     "split_history_retrospectively_retrieved_not_vendor_vintage_pit",
     "empty_event_list_is_valid_only_inside_verified_coverage",
     "twelve_data_splits_requires_grow_or_venture_plan",
-    "certifiable_history_capped_at_ten_years_from_request_end",
+    "certifiable_history_capped_at_ten_years_from_provider_retrieval",
+    "future_requested_end_cannot_extend_provider_history_floor",
 )
 
 
-def certifiable_splits_start(end_date: date) -> date:
-    """Earliest date EquityTrace will certify for a Twelve Data splits window."""
-    year = end_date.year - TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS
+def certifiable_splits_start(retrieved_at: datetime | date) -> date:
+    """Earliest date EquityTrace will certify, relative to provider retrieval.
+
+    The floor is anchored to actual evidence provenance (live fetch time), never
+    to an arbitrary historical or future request ``end_date``.
+    """
+    if isinstance(retrieved_at, datetime):
+        as_of = (
+            retrieved_at.astimezone(UTC).date()
+            if retrieved_at.tzinfo is not None
+            else retrieved_at.replace(tzinfo=UTC).date()
+        )
+    else:
+        as_of = retrieved_at
+    year = as_of.year - TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS
     if year < 1:
         return date(1, 1, 1)
     try:
-        return end_date.replace(year=year)
+        return as_of.replace(year=year)
     except ValueError:
         # e.g. Feb 29 → Feb 28 in non-leap target years
-        return end_date.replace(year=year, day=28)
+        return as_of.replace(year=year, day=28)
 
 
 def _redact(text: str, api_key: str) -> str:
@@ -389,11 +407,12 @@ class TwelveDataProvider:
     ) -> ProviderSplitsResponse:
         """Fetch dated stock-split events for ``provider_symbol`` (offline-tested).
 
-        Uses Twelve Data ``GET /splits`` with explicit ``start_date``/``end_date``.
+        Uses Twelve Data ``GET /splits`` with documented ``start_date``/``end_date``.
         A successful response — including an empty ``splits`` array — may establish
-        verified coverage only for the requested interval. This endpoint is a paid
-        Grow/Venture feature and costs API credits per symbol; callers must not
-        invoke it implicitly from factor calculations.
+        verified coverage only when the requested interval lies inside the
+        conservative history floor measured from the live retrieval timestamp.
+        This endpoint is a paid Grow/Venture feature; callers must not invoke it
+        implicitly from factor calculations.
         """
         symbol = provider_symbol.strip()
         if not symbol:
@@ -409,19 +428,26 @@ class TwelveDataProvider:
         }
         cache_params = {"endpoint": "splits", **params}
         if self._settings.enable_cache:
-            cached = self._read_splits_cache(cache_params)
-            if cached is not None:
+            cached_payload, cached_retrieved_at = self._read_splits_cache(cache_params)
+            if cached_payload is not None:
                 parsed = self._parse_splits_payload(
-                    cached,
+                    cached_payload,
                     symbol=symbol,
                     start_date=start_date,
                     end_date=end_date,
                 )
                 # Never re-certify incomplete cached evidence.
                 if parsed.response_complete:
-                    return parsed
+                    trusted = cached_retrieved_at is not None
+                    return parsed.model_copy(
+                        update={
+                            "provider_retrieved_at": cached_retrieved_at,
+                            "retrieval_provenance_trusted": trusted,
+                        }
+                    )
                 with contextlib.suppress(OSError):
                     self._cache_path(cache_params).unlink(missing_ok=True)
+        retrieved_at = utc_now()
         payload = self._request_json(TWELVE_DATA_SPLITS_URL, params)
         parsed = self._parse_splits_payload(
             payload,
@@ -430,13 +456,19 @@ class TwelveDataProvider:
             end_date=end_date,
         )
         # Cache only after semantic validation succeeds with zero malformed rows.
+        # Envelope preserves the live retrieval timestamp for later depth checks.
         if (
             self._settings.enable_cache
             and parsed.response_complete
             and _is_cacheable_splits_success(payload)
         ):
-            self._write_cache(cache_params, payload)
-        return parsed
+            self._write_splits_cache(cache_params, payload, retrieved_at=retrieved_at)
+        return parsed.model_copy(
+            update={
+                "provider_retrieved_at": retrieved_at,
+                "retrieval_provenance_trusted": True,
+            }
+        )
 
     def _request_json(self, url: str, params: dict[str, str]) -> dict[str, Any]:
         attempts = max(1, self._settings.market_data_max_retries)
@@ -734,23 +766,61 @@ class TwelveDataProvider:
             return None
         return payload
 
-    def _read_splits_cache(self, params: dict[str, str]) -> dict[str, Any] | None:
+    def _read_splits_cache(
+        self, params: dict[str, str]
+    ) -> tuple[dict[str, Any] | None, datetime | None]:
+        """Return ``(provider_payload, stamped_retrieved_at)``.
+
+        Legacy raw payloads without an EquityTrace envelope are readable for
+        parsing but return ``retrieved_at=None`` so callers refuse unsupported
+        coverage certification rather than fabricating new provenance.
+        """
         path = self._cache_path(params)
         if not path.exists():
-            return None
+            return None, None
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning("Ignoring corrupt splits cache file %s", path.name)
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
-            return None
-        if not isinstance(payload, dict) or not _is_cacheable_splits_success(payload):
+            return None, None
+        if not isinstance(raw, dict):
+            logger.warning("Ignoring non-object splits cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None, None
+
+        retrieved_at: datetime | None = None
+        payload = raw
+        envelope = raw.get(_SPLITS_CACHE_ENVELOPE_KEY)
+        if isinstance(envelope, dict):
+            inner = envelope.get("payload")
+            if not isinstance(inner, dict):
+                logger.warning("Ignoring splits cache envelope without payload %s", path.name)
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+                return None, None
+            payload = inner
+            stamp = envelope.get("retrieved_at")
+            if isinstance(stamp, str) and stamp.strip():
+                try:
+                    parsed_stamp = datetime.fromisoformat(stamp.strip())
+                except ValueError:
+                    parsed_stamp = None
+                if parsed_stamp is not None:
+                    retrieved_at = (
+                        parsed_stamp.astimezone(UTC)
+                        if parsed_stamp.tzinfo is not None
+                        else parsed_stamp.replace(tzinfo=UTC)
+                    )
+
+        if not _is_cacheable_splits_success(payload):
             logger.warning("Ignoring non-success splits cache file %s", path.name)
             with contextlib.suppress(OSError):
                 path.unlink(missing_ok=True)
-            return None
-        return payload
+            return None, None
+        return payload, retrieved_at
 
     def _write_cache(self, params: dict[str, str], payload: dict[str, Any]) -> None:
         path = self._cache_path(params)
@@ -763,6 +833,27 @@ class TwelveDataProvider:
             logger.warning("Failed to write market cache file %s", path.name)
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
+
+    def _write_splits_cache(
+        self,
+        params: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        retrieved_at: datetime,
+    ) -> None:
+        stamp = (
+            retrieved_at.astimezone(UTC)
+            if retrieved_at.tzinfo is not None
+            else retrieved_at.replace(tzinfo=UTC)
+        )
+        envelope = {
+            _SPLITS_CACHE_ENVELOPE_KEY: {
+                "schema": _SPLITS_CACHE_SCHEMA,
+                "retrieved_at": stamp.isoformat(),
+                "payload": payload,
+            }
+        }
+        self._write_cache(params, envelope)
 
 
 def date_windows(start: date, end: date, window_days: int) -> list[tuple[date, date]]:

@@ -1231,6 +1231,250 @@ def test_out_of_certifiable_depth_not_verified(
     assert "depth_unknown" in result.error_summary
 
 
+def _fixed_retrieval_2026(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    """Pin provider retrieval provenance to mid-2026 for depth regressions."""
+    fixed = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+
+    def _now() -> datetime:
+        return fixed
+
+    monkeypatch.setattr("equitytrace.market.providers.twelve_data.utc_now", _now)
+    monkeypatch.setattr("equitytrace.market.service.utc_now", _now)
+    return fixed
+
+
+def test_past_window_outside_provider_retrieval_floor_not_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case A: short span still fails when start is before retrieval-10y."""
+    settings = _settings(tmp_path, monkeypatch)
+    _fixed_retrieval_2026(monkeypatch)
+    db = initialize_database(settings.database_path)
+    empty = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+    with_event = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [
+            {
+                "date": "2015-06-01",
+                "description": "2-for-1 split",
+                "ratio": 0.5,
+                "from_factor": 2,
+                "to_factor": 1,
+            }
+        ],
+    }
+    for payload in (empty, with_event):
+
+        def handler(request: httpx.Request, body: dict = payload) -> httpx.Response:
+            return httpx.Response(200, json=body)
+
+        with db.session() as conn:
+            provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+            result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+                "AAA",
+                start_date=date(2012, 1, 1),
+                end_date=date(2020, 12, 31),
+            )
+        # Floor from 2026-06-15 is 2016-06-15; 2012 start is outside.
+        assert result.coverage_status is SplitCoverageStatus.UNKNOWN
+        assert result.status.value == "partial"
+        assert result.error_summary is not None
+        assert "depth_unknown" in result.error_summary
+
+
+def test_supported_window_within_provider_retrieval_floor_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case B: 2019-2023 is inside a 2026 retrieval-10y floor when complete."""
+    settings = _settings(tmp_path, monkeypatch)
+    _fixed_retrieval_2026(monkeypatch)
+    db = initialize_database(settings.database_path)
+    empty = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+    with_event = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [
+            {
+                "date": "2020-08-31",
+                "description": "4-for-1 split",
+                "ratio": 0.25,
+                "from_factor": 4,
+                "to_factor": 1,
+            }
+        ],
+    }
+    for payload, expected_events in ((empty, 0), (with_event, 1)):
+
+        def handler(request: httpx.Request, body: dict = payload) -> httpx.Response:
+            return httpx.Response(200, json=body)
+
+        with db.session() as conn:
+            provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+            result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+                "AAA",
+                start_date=date(2019, 1, 1),
+                end_date=date(2023, 12, 31),
+            )
+        assert result.coverage_status is SplitCoverageStatus.VERIFIED
+        assert result.status.value == "success"
+        assert result.event_count == expected_events
+
+
+def test_future_request_end_does_not_extend_history_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case C: future end_date cannot invent post-retrieval coverage."""
+    settings = _settings(tmp_path, monkeypatch)
+    fixed = _fixed_retrieval_2026(monkeypatch)
+    db = initialize_database(settings.database_path)
+    payload = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA",
+            start_date=date(2019, 1, 1),
+            end_date=date(2035, 12, 31),
+        )
+    assert result.coverage_status is SplitCoverageStatus.UNKNOWN
+    assert result.error_summary is not None
+    assert "future_end" in result.error_summary
+    # Floor remains retrieval-10y, not end_date-10y (2035 -> 2025).
+    from equitytrace.market.providers.twelve_data import certifiable_splits_start
+
+    assert certifiable_splits_start(fixed) == date(2016, 6, 15)
+    assert certifiable_splits_start(date(2035, 12, 31)) == date(2025, 12, 31)
+
+
+def test_cached_splits_without_retrieval_stamp_not_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Case D: legacy cache bytes must not fabricate live retrieval provenance."""
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    settings = settings.model_copy(
+        update={
+            "database_path": tmp_path / "split.duckdb",
+            "cache_dir": tmp_path / "cache",
+            "market_data_cache_dir": tmp_path / "mcache",
+            "enable_cache": True,
+            "twelve_data_api_key": "test-key",
+            "sec_email": "tests@example.com",
+        }
+    )
+    _fixed_retrieval_2026(monkeypatch)
+    db = initialize_database(settings.database_path)
+    legacy_payload = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+
+    # Pre-seed a raw (non-envelope) cache entry as older builds wrote.
+    def _noop_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    provider_for_path = TwelveDataProvider(settings, transport=httpx.MockTransport(_noop_handler))
+    cache_params = {
+        "endpoint": "splits",
+        "symbol": "AAA",
+        "start_date": "2019-01-01",
+        "end_date": "2023-12-31",
+    }
+    provider_for_path._write_cache(cache_params, legacy_payload)
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=legacy_payload)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        result = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA",
+            start_date=date(2019, 1, 1),
+            end_date=date(2023, 12, 31),
+        )
+    # Cache hit must not invent a new retrieval timestamp for certification.
+    assert calls["n"] == 0
+    assert result.coverage_status is SplitCoverageStatus.UNKNOWN
+    assert result.error_summary is not None
+    assert "provenance_untrusted" in result.error_summary
+
+
+def test_cached_splits_with_stamped_retrieval_may_verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Envelope-stamped cache preserves original retrieval for depth checks."""
+    monkeypatch.setenv("EQUITYTRACE_ENABLE_CACHE", "true")
+    clear_settings_cache()
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    settings = settings.model_copy(
+        update={
+            "database_path": tmp_path / "split.duckdb",
+            "cache_dir": tmp_path / "cache",
+            "market_data_cache_dir": tmp_path / "mcache",
+            "enable_cache": True,
+            "twelve_data_api_key": "test-key",
+            "sec_email": "tests@example.com",
+        }
+    )
+    fixed = _fixed_retrieval_2026(monkeypatch)
+    db = initialize_database(settings.database_path)
+    payload = {
+        "meta": {"symbol": "AAA", "exchange_timezone": "America/New_York"},
+        "splits": [],
+    }
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=payload)
+
+    with db.session() as conn:
+        provider = TwelveDataProvider(settings, transport=httpx.MockTransport(handler))
+        first = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA",
+            start_date=date(2019, 1, 1),
+            end_date=date(2023, 12, 31),
+        )
+        # Advance wall clock; stamped cache provenance must stay at `fixed`.
+        later = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)
+        monkeypatch.setattr("equitytrace.market.providers.twelve_data.utc_now", lambda: later)
+        monkeypatch.setattr("equitytrace.market.service.utc_now", lambda: later)
+        second = MarketDataService(conn, settings, provider=provider).ingest_splits(
+            "AAA",
+            start_date=date(2019, 1, 1),
+            end_date=date(2023, 12, 31),
+        )
+        repo = MarketRepository(conn)
+        instrument = repo.get_instrument_by_symbol("AAA")
+        assert instrument is not None
+        coverage = repo.get_verified_split_coverage(
+            instrument.instrument_id,
+            shares_fact_date=date(2019, 1, 1),
+            price_date=date(2023, 12, 31),
+            provider_symbol="AAA",
+        )
+    assert first.coverage_status is SplitCoverageStatus.VERIFIED
+    assert second.coverage_status is SplitCoverageStatus.VERIFIED
+    assert calls["n"] == 1
+    assert coverage is not None
+    assert coverage.retrieved_at.astimezone(UTC) == fixed
+
+
 def test_effective_date_boundary_inclusive_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

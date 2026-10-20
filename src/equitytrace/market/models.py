@@ -308,6 +308,11 @@ class ProviderSplitsResponse(BaseModel):
     # False when any in-window row failed semantic validation. Incomplete
     # responses must never establish VERIFIED no-split coverage.
     response_complete: bool = True
+    # Wall-clock time of the live provider fetch that produced this evidence.
+    # Must not be fabricated from a later cache-read time.
+    provider_retrieved_at: datetime | None = None
+    # False when cached evidence lacks a stamped live-retrieval timestamp.
+    retrieval_provenance_trusted: bool = False
 
 
 class SplitIngestionResult(BaseModel):
