@@ -31,6 +31,8 @@ from equitytrace.market.models import (
     MarketDataProviderName,
     PriceAdjustmentMode,
     ProviderBar,
+    ProviderSplitEvent,
+    ProviderSplitsResponse,
 )
 from equitytrace.market.providers.errors import (
     MarketDataAuthError,
@@ -41,10 +43,13 @@ from equitytrace.market.providers.errors import (
     MarketDataTransientError,
     MarketDataValidationError,
 )
+from equitytrace.market.splits import SplitRatioError, parse_split_ratio
+from equitytrace.models import utc_now
 
 logger = logging.getLogger(__name__)
 
 TWELVE_DATA_TIME_SERIES_URL = "https://api.twelvedata.com/time_series"
+TWELVE_DATA_SPLITS_URL = "https://api.twelvedata.com/splits"
 # Calendar window size for multi-year requests. With start_date+end_date we omit
 # outputsize (Twelve Data may truncate when outputsize is combined with a range).
 _WINDOW_DAYS = 400
@@ -54,6 +59,49 @@ _SUPPORTED_ADJUST = {
     PriceAdjustmentMode.NONE: "none",
     PriceAdjustmentMode.ALL: "all",
 }
+# Completeness basis when a bounded /splits response is fully validated and the
+# certified window lies inside the conservative history depth anchored at
+# provider retrieval time (not the caller's requested end_date).
+SPLITS_COVERAGE_BASIS = "twelve_data_splits_validated_range_within_certifiable_history"
+SPLITS_COVERAGE_ERROR_BASIS = "twelve_data_splits_response_incomplete"
+# Twelve Data /splits accepts start_date/end_date and range (incl. full). Official
+# docs do not publish a hard completeness SLA; EquityTrace uses a conservative
+# 10-year floor measured from the live retrieval timestamp.
+TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS = 10
+_SPLITS_CACHE_ENVELOPE_KEY = "equitytrace_splits_cache"
+_SPLITS_CACHE_SCHEMA = 1
+SPLITS_COVERAGE_LIMITATIONS = (
+    "coverage_limited_to_validated_certifiable_window",
+    "split_history_retrospectively_retrieved_not_vendor_vintage_pit",
+    "empty_event_list_is_valid_only_inside_verified_coverage",
+    "twelve_data_splits_requires_grow_or_venture_plan",
+    "certifiable_history_capped_at_ten_years_from_provider_retrieval",
+    "future_requested_end_cannot_extend_provider_history_floor",
+)
+
+
+def certifiable_splits_start(retrieved_at: datetime | date) -> date:
+    """Earliest date EquityTrace will certify, relative to provider retrieval.
+
+    The floor is anchored to actual evidence provenance (live fetch time), never
+    to an arbitrary historical or future request ``end_date``.
+    """
+    if isinstance(retrieved_at, datetime):
+        as_of = (
+            retrieved_at.astimezone(UTC).date()
+            if retrieved_at.tzinfo is not None
+            else retrieved_at.replace(tzinfo=UTC).date()
+        )
+    else:
+        as_of = retrieved_at
+    year = as_of.year - TWELVE_DATA_SPLITS_CERTIFIABLE_HISTORY_YEARS
+    if year < 1:
+        return date(1, 1, 1)
+    try:
+        return as_of.replace(year=year)
+    except ValueError:
+        # e.g. Feb 29 → Feb 28 in non-leap target years
+        return as_of.replace(year=year, day=28)
 
 
 def _redact(text: str, api_key: str) -> str:
@@ -130,11 +178,15 @@ class TwelveDataProvider:
             monotonic_fn=monotonic_fn,
         )
         self._owns_client = client is None
+        self._auth_header = f"apikey {key}"
         self._client = client or httpx.Client(
             timeout=settings.market_data_timeout_seconds,
             transport=transport,
             follow_redirects=True,
-            headers={"Accept": "application/json"},
+            headers={
+                "Accept": "application/json",
+                "Authorization": self._auth_header,
+            },
         )
         if settings.enable_cache:
             settings.market_data_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -320,6 +372,7 @@ class TwelveDataProvider:
     ) -> DailyBarsResponse:
         # Prefer omitting outputsize when both start_date and end_date are set.
         # Twelve Data may silently truncate when outputsize is combined with a range.
+        # Auth is sent only via Authorization header — never as a query parameter.
         params = {
             "symbol": symbol,
             "interval": "1day",
@@ -327,11 +380,9 @@ class TwelveDataProvider:
             "end_date": end_date.isoformat(),
             "adjust": _SUPPORTED_ADJUST[adjustment_mode],
             "order": "ASC",
-            "apikey": self._api_key,
         }
-        cache_key_params = {k: v for k, v in params.items() if k != "apikey"}
         if self._settings.enable_cache:
-            cached = self._read_cache(cache_key_params)
+            cached = self._read_cache(params)
             if cached is not None:
                 return self._parse_payload(
                     cached,
@@ -339,16 +390,87 @@ class TwelveDataProvider:
                     adjustment_mode=adjustment_mode,
                 )
 
-        payload = self._request_json(params)
+        payload = self._request_json(TWELVE_DATA_TIME_SERIES_URL, params)
         if self._settings.enable_cache and _is_cacheable_success(payload):
-            self._write_cache(cache_key_params, payload)
+            self._write_cache(params, payload)
         return self._parse_payload(
             payload,
             symbol=symbol,
             adjustment_mode=adjustment_mode,
         )
 
-    def _request_json(self, params: dict[str, str]) -> dict[str, Any]:
+    def fetch_splits(
+        self,
+        provider_symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> ProviderSplitsResponse:
+        """Fetch dated stock-split events for ``provider_symbol`` (offline-tested).
+
+        Uses Twelve Data ``GET /splits`` with documented ``start_date``/``end_date``.
+        A successful response — including an empty ``splits`` array — may establish
+        verified coverage only when the requested interval lies inside the
+        conservative history floor measured from the live retrieval timestamp.
+        This endpoint is a paid Grow/Venture feature; callers must not invoke it
+        implicitly from factor calculations.
+        """
+        symbol = provider_symbol.strip()
+        if not symbol:
+            raise MarketDataSymbolError("Provider symbol must not be empty.")
+        if start_date > end_date:
+            raise MarketDataValidationError(
+                f"start_date {start_date} is after end_date {end_date}."
+            )
+        params = {
+            "symbol": symbol,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+        }
+        cache_params = {"endpoint": "splits", **params}
+        if self._settings.enable_cache:
+            cached_payload, cached_retrieved_at = self._read_splits_cache(cache_params)
+            if cached_payload is not None:
+                parsed = self._parse_splits_payload(
+                    cached_payload,
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+                # Never re-certify incomplete cached evidence.
+                if parsed.response_complete:
+                    trusted = cached_retrieved_at is not None
+                    return parsed.model_copy(
+                        update={
+                            "provider_retrieved_at": cached_retrieved_at,
+                            "retrieval_provenance_trusted": trusted,
+                        }
+                    )
+                with contextlib.suppress(OSError):
+                    self._cache_path(cache_params).unlink(missing_ok=True)
+        retrieved_at = utc_now()
+        payload = self._request_json(TWELVE_DATA_SPLITS_URL, params)
+        parsed = self._parse_splits_payload(
+            payload,
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        # Cache only after semantic validation succeeds with zero malformed rows.
+        # Envelope preserves the live retrieval timestamp for later depth checks.
+        if (
+            self._settings.enable_cache
+            and parsed.response_complete
+            and _is_cacheable_splits_success(payload)
+        ):
+            self._write_splits_cache(cache_params, payload, retrieved_at=retrieved_at)
+        return parsed.model_copy(
+            update={
+                "provider_retrieved_at": retrieved_at,
+                "retrieval_provenance_trusted": True,
+            }
+        )
+
+    def _request_json(self, url: str, params: dict[str, str]) -> dict[str, Any]:
         attempts = max(1, self._settings.market_data_max_retries)
 
         @retry(
@@ -359,10 +481,14 @@ class TwelveDataProvider:
         )
         def _once() -> dict[str, Any]:
             self._rate_limiter.wait()
-            safe_qs = urlencode({k: v for k, v in params.items() if k != "apikey"})
-            logger.debug("GET %s?%s", TWELVE_DATA_TIME_SERIES_URL, safe_qs)
+            safe_qs = urlencode(params)
+            logger.debug("GET %s?%s", url, safe_qs)
             try:
-                response = self._client.get(TWELVE_DATA_TIME_SERIES_URL, params=params)
+                response = self._client.get(
+                    url,
+                    params=params,
+                    headers={"Authorization": self._auth_header},
+                )
             except httpx.TimeoutException as exc:
                 raise MarketDataTransientError("Twelve Data request timed out.") from exc
             except httpx.TransportError as exc:
@@ -394,6 +520,116 @@ class TwelveDataProvider:
             return payload
 
         return _once()
+
+    def _parse_splits_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> ProviderSplitsResponse:
+        status = str(payload.get("status") or "").lower()
+        code = payload.get("code")
+        message = str(payload.get("message") or payload.get("status") or "")
+        redacted_message = _redact(message, self._api_key)
+
+        if status == "error" or (isinstance(code, int) and code >= 400):
+            lowered = redacted_message.lower()
+            if "api key" in lowered or code in {401, 403}:
+                raise MarketDataAuthError("Twelve Data rejected the API key or denied access.")
+            if code == 429:
+                raise MarketDataTransientError(
+                    "Twelve Data rate limit exceeded.",
+                    status_code=429,
+                )
+            if isinstance(code, int) and code >= 500:
+                raise MarketDataTransientError(
+                    f"Twelve Data upstream error for {symbol}: {redacted_message or code}",
+                    status_code=code,
+                )
+            if "plan" in lowered or "permission" in lowered or "not available" in lowered:
+                raise MarketDataAuthError(
+                    "Twelve Data /splits is unavailable for this API plan "
+                    "(Grow/Venture or above required)."
+                )
+            if "symbol" in lowered or code in {400, 404}:
+                raise MarketDataSymbolError(f"Twelve Data does not recognize symbol '{symbol}'.")
+            raise MarketDataError(
+                f"Twelve Data splits error for {symbol}: {redacted_message or 'unknown error'}"
+            )
+
+        if "splits" not in payload:
+            raise MarketDataValidationError("Twelve Data splits response missing 'splits' field.")
+        splits_raw = payload.get("splits")
+        if not isinstance(splits_raw, list):
+            raise MarketDataValidationError("Twelve Data 'splits' field must be a list.")
+
+        meta_obj = payload.get("meta")
+        meta: dict[str, Any] = meta_obj if isinstance(meta_obj, dict) else {}
+        meta_symbol = str(meta.get("symbol") or "").strip().upper()
+        if meta_symbol and meta_symbol != symbol.strip().upper():
+            raise MarketDataValidationError(
+                f"Twelve Data splits meta symbol {meta_symbol!r} does not match "
+                f"requested {symbol.strip().upper()!r}."
+            )
+
+        exchange_timezone = "America/New_York"
+        tz_raw = meta.get("exchange_timezone") or meta.get("timezone")
+        if tz_raw is not None and str(tz_raw).strip():
+            exchange_timezone = str(tz_raw).strip()
+
+        by_date: dict[date, ProviderSplitEvent] = {}
+        malformed = 0
+        duplicate_rows = 0
+        conflicting: set[date] = set()
+        for raw in splits_raw:
+            if not isinstance(raw, dict):
+                malformed += 1
+                continue
+            try:
+                event = _parse_provider_split(raw)
+            except (MarketDataValidationError, SplitRatioError):
+                malformed += 1
+                continue
+            if not (start_date <= event.effective_date <= end_date):
+                # Outside the verified request window — ignore for coverage.
+                continue
+            if event.effective_date in conflicting:
+                duplicate_rows += 1
+                continue
+            existing = by_date.get(event.effective_date)
+            if existing is None:
+                by_date[event.effective_date] = event
+                continue
+            duplicate_rows += 1
+            if (
+                existing.from_factor == event.from_factor
+                and existing.to_factor == event.to_factor
+                and existing.share_multiplier == event.share_multiplier
+            ):
+                continue
+            del by_date[event.effective_date]
+            conflicting.add(event.effective_date)
+
+        conflict_dates = tuple(sorted(conflicting))
+        # Malformed or conflicting rows invalidate proof of complete coverage.
+        # Zero successfully parsed events is then NOT proof of zero provider events.
+        response_complete = malformed == 0 and not conflict_dates
+        events = tuple(by_date[d] for d in sorted(by_date)) if response_complete else ()
+        return ProviderSplitsResponse(
+            provider=MarketDataProviderName.TWELVE_DATA,
+            provider_symbol=symbol,
+            requested_start_date=start_date,
+            requested_end_date=end_date,
+            exchange_timezone=exchange_timezone,
+            events=events,
+            meta={k: v for k, v in meta.items() if "key" not in str(k).lower()},
+            malformed_row_count=malformed,
+            duplicate_row_count=duplicate_rows,
+            conflicting_dates=conflict_dates,
+            response_complete=response_complete,
+        )
 
     def _parse_payload(
         self,
@@ -530,6 +766,62 @@ class TwelveDataProvider:
             return None
         return payload
 
+    def _read_splits_cache(
+        self, params: dict[str, str]
+    ) -> tuple[dict[str, Any] | None, datetime | None]:
+        """Return ``(provider_payload, stamped_retrieved_at)``.
+
+        Legacy raw payloads without an EquityTrace envelope are readable for
+        parsing but return ``retrieved_at=None`` so callers refuse unsupported
+        coverage certification rather than fabricating new provenance.
+        """
+        path = self._cache_path(params)
+        if not path.exists():
+            return None, None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Ignoring corrupt splits cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None, None
+        if not isinstance(raw, dict):
+            logger.warning("Ignoring non-object splits cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None, None
+
+        retrieved_at: datetime | None = None
+        payload = raw
+        envelope = raw.get(_SPLITS_CACHE_ENVELOPE_KEY)
+        if isinstance(envelope, dict):
+            inner = envelope.get("payload")
+            if not isinstance(inner, dict):
+                logger.warning("Ignoring splits cache envelope without payload %s", path.name)
+                with contextlib.suppress(OSError):
+                    path.unlink(missing_ok=True)
+                return None, None
+            payload = inner
+            stamp = envelope.get("retrieved_at")
+            if isinstance(stamp, str) and stamp.strip():
+                try:
+                    parsed_stamp = datetime.fromisoformat(stamp.strip())
+                except ValueError:
+                    parsed_stamp = None
+                if parsed_stamp is not None:
+                    retrieved_at = (
+                        parsed_stamp.astimezone(UTC)
+                        if parsed_stamp.tzinfo is not None
+                        else parsed_stamp.replace(tzinfo=UTC)
+                    )
+
+        if not _is_cacheable_splits_success(payload):
+            logger.warning("Ignoring non-success splits cache file %s", path.name)
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return None, None
+        return payload, retrieved_at
+
     def _write_cache(self, params: dict[str, str], payload: dict[str, Any]) -> None:
         path = self._cache_path(params)
         tmp = path.with_suffix(".tmp")
@@ -541,6 +833,27 @@ class TwelveDataProvider:
             logger.warning("Failed to write market cache file %s", path.name)
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
+
+    def _write_splits_cache(
+        self,
+        params: dict[str, str],
+        payload: dict[str, Any],
+        *,
+        retrieved_at: datetime,
+    ) -> None:
+        stamp = (
+            retrieved_at.astimezone(UTC)
+            if retrieved_at.tzinfo is not None
+            else retrieved_at.replace(tzinfo=UTC)
+        )
+        envelope = {
+            _SPLITS_CACHE_ENVELOPE_KEY: {
+                "schema": _SPLITS_CACHE_SCHEMA,
+                "retrieved_at": stamp.isoformat(),
+                "payload": payload,
+            }
+        }
+        self._write_cache(params, envelope)
 
 
 def date_windows(start: date, end: date, window_days: int) -> list[tuple[date, date]]:
@@ -622,6 +935,46 @@ def _is_cacheable_success(payload: dict[str, Any]) -> bool:
         return False
     values = payload.get("values")
     return isinstance(values, list)
+
+
+def _is_cacheable_splits_success(payload: dict[str, Any]) -> bool:
+    status = str(payload.get("status") or "").lower()
+    if status == "error":
+        return False
+    code = payload.get("code")
+    if isinstance(code, int) and code >= 400:
+        return False
+    splits = payload.get("splits")
+    return isinstance(splits, list)
+
+
+def _parse_provider_split(raw: dict[str, Any]) -> ProviderSplitEvent:
+    date_raw = raw.get("date") or raw.get("datetime")
+    if date_raw is None or (isinstance(date_raw, str) and not str(date_raw).strip()):
+        raise MarketDataValidationError("Missing split date")
+    try:
+        effective_date = date.fromisoformat(str(date_raw).strip()[:10])
+    except ValueError as exc:
+        raise MarketDataValidationError("Invalid split date") from exc
+    if "from_factor" not in raw or "to_factor" not in raw:
+        raise MarketDataValidationError("Split row missing from_factor/to_factor")
+    description = raw.get("description")
+    description_text = str(description).strip() if description is not None else None
+    parsed = parse_split_ratio(
+        from_factor=raw.get("from_factor"),
+        to_factor=raw.get("to_factor"),
+        source_ratio=raw.get("ratio"),
+        description=description_text or None,
+    )
+    return ProviderSplitEvent(
+        effective_date=effective_date,
+        from_factor=parsed.from_factor,
+        to_factor=parsed.to_factor,
+        share_multiplier=parsed.share_multiplier,
+        source_ratio=parsed.source_ratio,
+        description=parsed.description,
+        metadata={"provider_date": str(date_raw)},
+    )
 
 
 def require_provider_meta(meta: dict[str, Any]) -> tuple[str, str]:

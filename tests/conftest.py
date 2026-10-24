@@ -35,6 +35,7 @@ def _clear_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "EQUITYTRACE_DATABASE_PATH",
         "EQUITYTRACE_CACHE_DIR",
         "EQUITYTRACE_ENABLE_CACHE",
+        "EQUITYTRACE_SEC_CACHE_TTL_SECONDS",
         "EQUITYTRACE_HTTP_TIMEOUT_SECONDS",
         "EQUITYTRACE_MAX_REQUESTS_PER_SECOND",
         "FILINGEDGE_SEC_EMAIL",

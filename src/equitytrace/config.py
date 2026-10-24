@@ -129,6 +129,17 @@ class Settings(BaseSettings):
             "FILINGEDGE_ENABLE_CACHE",
         ),
     )
+    # Mutable SEC endpoints (company_tickers, submissions, Company Facts).
+    # Historical archived submissions use an immutable-cache policy instead.
+    sec_cache_ttl_seconds: float = Field(
+        default=86_400.0,
+        gt=0,
+        description=(
+            "Max age in seconds for mutable SEC HTTP cache entries before a "
+            "fresh fetch is required (default: 86400 = 24 hours)."
+        ),
+        validation_alias="EQUITYTRACE_SEC_CACHE_TTL_SECONDS",
+    )
 
     # --- Market data (v0.3a); no FILINGEDGE_* legacy aliases ---
     market_data_provider: str = Field(

@@ -110,7 +110,7 @@ def test_outputsize_omitted_when_start_and_end_present(
         )
     assert seen
     assert "outputsize" not in seen[0]
-    assert "apikey" in seen[0]
+    assert "apikey" not in seen[0]
     assert seen[0]["start_date"] == ["2023-01-01"]
     assert seen[0]["end_date"] == ["2023-01-10"]
 
@@ -647,7 +647,9 @@ def test_price_as_of_boundary_microsecond(tmp_path: Path) -> None:
 def test_split_transition_without_future_shares(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Point-in-time correctness wins over economic continuity."""
+    """Pre-split SEC shares + post-split raw price require verified split evidence."""
+    from helpers.split_coverage import seed_split_event, seed_verified_split_coverage
+
     settings = _settings(tmp_path, monkeypatch)
     db = initialize_database(settings.database_path)
     with db.session() as conn:
@@ -705,11 +707,36 @@ def test_split_transition_without_future_shares(
                 )
             ]
         )
+        # Without coverage, refuse the historically incorrect pre-split x post-split product.
+        missing = MarketCapService(conn).get_market_cap("AAA", date(2023, 2, 10))
+        assert not missing.is_available
+        assert missing.unavailable_reason == "split_coverage_unavailable"
+        assert missing.shares_outstanding == Decimal("1000000")
+        assert missing.raw_close == Decimal("50")
+
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument.instrument_id,
+            coverage_start=date(2023, 1, 1),
+            coverage_end=date(2023, 2, 10),
+            provider_symbol="AAA",
+        )
+        seed_split_event(
+            conn,
+            instrument_id=instrument.instrument_id,
+            provider_symbol="AAA",
+            effective_date=date(2023, 2, 10),
+            from_factor=2,
+            to_factor=1,
+            description="2-for-1 split",
+            source_ratio="0.5",
+        )
         result = MarketCapService(conn).get_market_cap("AAA", date(2023, 2, 10))
     assert result.is_available
     assert result.raw_close == Decimal("50")
     assert result.shares_outstanding == Decimal("1000000")
-    assert result.market_cap == Decimal("50000000")
+    assert result.reconciled_shares_outstanding == Decimal("2000000")
+    assert result.market_cap == Decimal("100000000")
     assert result.shares_fact_date == date(2023, 1, 1)
 
 
@@ -805,6 +832,15 @@ def test_series_multi_year_modest_perf(tmp_path: Path, monkeypatch: pytest.Monke
                 )
             day += timedelta(days=1)
         repo.upsert_price_bars(bars)
+        from helpers.split_coverage import seed_verified_split_coverage
+
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument.instrument_id,
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2022, 12, 31),
+            provider_symbol="AAA",
+        )
         points = MarketCapService(conn).get_market_cap_series(
             "AAA",
             date(2020, 1, 1),

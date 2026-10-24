@@ -16,6 +16,8 @@ release.
 | Factor value | `(ticker, factor, fy, fp, as_of)` | Optional materialized factor output |
 | Market instrument | `instrument_id` | Durable market identity; display symbol is unique in v0.3a |
 | Daily price bar | `(instrument_id, provider, trading_date, adjustment_mode)` | Raw and adjusted series coexist |
+| Stock split event | `event_id` | Verified split with effective date and share multiplier |
+| Stock split coverage | `coverage_id` | Verified provider history window (not implied by empty events) |
 | Portfolio run | `run_id` | Native research backtest (v0.3c) |
 
 An issuer is **not** a ticker. Share classes and secondary listings are modeled as securities.
@@ -32,7 +34,7 @@ Records applied logical schema versions. Initialization is idempotent via
 `CREATE TABLE IF NOT EXISTS` plus `ON CONFLICT DO NOTHING`.
 
 Current labels: `0.2.0`, `0.3.0-a` (legacy alias `0.3.0a`), `0.3.0-a1`,
-`0.3.0-a2`, `0.3.0-b`, `0.3.0-c`.
+`0.3.0-a2`, `0.3.0-b`, `0.3.0-c`, `1.0.0-a` (stock-split events + coverage).
 
 ### factor_runs
 
@@ -90,6 +92,17 @@ series coexist. Prices use `DECIMAL(18, 6)` storage. `available_at` is the
 exchange-local 16:15 convention converted to UTC; `fetched_at` records when
 EquityTrace downloaded the bar.
 
+### stock_split_events / stock_split_coverage (migration `1.0.0-a`)
+
+Narrow additive tables for split-safe market cap. `stock_split_events` stores
+verified events with deterministic `event_id`, exact `from_factor` / `to_factor` /
+`share_multiplier` strings, modeled `available_at`, and `retrieved_at`.
+`stock_split_coverage` stores independently verified history windows
+(`status=verified|unknown|error`) with a completeness basis and limitations.
+Empty event lists never imply “no splits”; only coverage certifies a window.
+Both tables omit DuckDB FKs to `market_instruments` for the same parent-UPDATE
+reason as other market child tables.
+
 `market_symbol_mappings` uses a surrogate `mapping_id` primary key so the same
 provider symbol can be reused by a different instrument after a prior mapping
 expires (`valid_from` / `valid_to`). Overlapping validity windows for the same
@@ -106,11 +119,25 @@ derives it from the current display symbol.
 SPY and other benchmarks can exist as ETF/index instruments without an SEC
 issuer link. Equities preferably link to `securities` / `issuers` when present.
 
+### SEC response cache
+
+Optional local cache under `EQUITYTRACE_CACHE_DIR` (default `data/cache`).
+Mutable SEC endpoints (`company_tickers`, live CIK submissions, Company Facts)
+honor `EQUITYTRACE_SEC_CACHE_TTL_SECONDS` (default 86400 = 24 hours) based on
+cache-file mtime. Expired entries are never returned; a network fetch is
+required, and transient SEC failures fail the request instead of silently
+serving stale data. Historical archived submissions files are cached immutably
+(no age expiry) but are still replaced on a successful `ingest --refresh`.
+Cache freshness is independent of point-in-time `available_at` on financial
+facts. Corrupt cache files are ignored and replaced. Disable
+`EQUITYTRACE_ENABLE_CACHE` to skip the cache entirely.
+
 ### Market response cache
 
 Optional local cache under `EQUITYTRACE_MARKET_DATA_CACHE_DIR` (default
 `data/cache/market`). Cache keys include provider, symbol, interval, date
-range, and adjustment mode — never the API key. Only successful payloads with a
+range, and adjustment mode — never the API key. Authentication uses the
+`Authorization: apikey <key>` header only. Only successful payloads with a
 `values` list are cached; error payloads are not. There is no TTL: disable
 `EQUITYTRACE_ENABLE_CACHE` to force fresh provider fetches when corrections must
 be observed immediately. Corrupt cache files are ignored and replaced.

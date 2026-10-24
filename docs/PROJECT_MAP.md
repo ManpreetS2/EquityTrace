@@ -261,7 +261,8 @@ Migration labels in `schema_migrations`: `0.2.0`, `0.3.0-a`, legacy `0.3.0a`,
 
 Caches (gitignored under `data/`):
 
-* SEC: `EQUITYTRACE_CACHE_DIR` (default `data/cache`)
+* SEC: `EQUITYTRACE_CACHE_DIR` (default `data/cache`); mutable TTL via
+  `EQUITYTRACE_SEC_CACHE_TTL_SECONDS` (default 24h); archives immutable
 * Market: `EQUITYTRACE_MARKET_DATA_CACHE_DIR` (default `data/cache/market`)
 
 No live cache, `.env`, or DuckDB file is committed.
