@@ -137,6 +137,21 @@ def test_parse_split_ratio_four_for_one_and_reverse() -> None:
         )
 
 
+@pytest.mark.parametrize("field", ["from_factor", "to_factor", "source_ratio"])
+@pytest.mark.parametrize("bad", ["NaN", "sNaN", "Infinity", "-Infinity", float("nan"), float("inf")])
+def test_nonfinite_split_factor_rejected_as_validation_error(field: str, bad: object) -> None:
+    # A malformed provider row must fail closed, not raise decimal.InvalidOperation
+    # or propagate infinite market-cap multipliers into persisted research results.
+    values: dict[str, object] = {
+        "from_factor": 4,
+        "to_factor": 1,
+        "source_ratio": "0.25",
+    }
+    values[field] = bad
+    with pytest.raises(SplitRatioError, match="finite and positive"):
+        parse_split_ratio(**values)
+
+
 def test_four_for_one_split_before_price_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
