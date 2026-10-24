@@ -137,6 +137,10 @@ persisted run, HTML and JSON exports regenerate byte-identically.
 
 - Not investment advice; no guaranteed correctness or profitability
 - Provider-adjusted history ≠ vendor-vintage PIT prices
+- Split history used for market cap is retrieved retrospectively (not vendor-vintage PIT); after a
+  failed or partial split refresh, market cap is unavailable until `market ingest-splits` is
+  re-run over the full range ([recovery](docs/metrics.md))
+- Tied factor scores at the top-N cutoff are broken alphabetically and flagged `top_n_tie_at_cutoff`
 - User universes may embed survivorship bias
 - No share/fill execution ledger, intraday book, or broker APIs
 - No web UI / Streamlit / FastAPI

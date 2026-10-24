@@ -75,6 +75,27 @@ and the raw price date.
 * `split_provider_symbol_ambiguous` — mapping gap or multi-symbol identity over
   the gap
 
+**Recovery after unavailable / failed coverage (accepted v1.0 behavior)**
+
+Split coverage is deliberately conservative. A failed, partial, or narrower refresh
+demotes overlapping verified coverage, and separately ingested windows are **not**
+combined: one verified window must span from the SEC shares fact date through the
+price date. Market cap and valuation factors then report the `split_coverage_*` reason
+rather than a possibly wrong number. To recover, re-ingest one range that covers the
+whole gap (start on or before the oldest shares fact date you need, end on or after the
+latest price date):
+
+```bash
+uv run equitytrace market ingest-splits AAPL --start 2020-01-01 --end 2024-12-31
+```
+
+**Not vendor-vintage point-in-time.** Split history is retrieved retrospectively, so a
+split that the provider only knew about later can affect earlier dates. This is
+acceptable for historical reconstruction but is never vendor-vintage PIT evidence. It is
+surfaced as `split_history_not_vendor_vintage_pit` on market-cap results, on the
+backtest run warnings and audit when a valuation signal was selected, and in the
+"Methodology limitations" section of the HTML report.
+
 When market cap is unavailable for these reasons, `fcf_yield`,
 `price_to_earnings`, `price_to_sales`, and `price_to_book` stay unavailable;
 ranking excludes them; backtest signal selection fails closed.

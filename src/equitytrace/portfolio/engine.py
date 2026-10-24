@@ -16,6 +16,7 @@ from equitytrace.factors.engine import FactorEngine
 from equitytrace.factors.models import FactorResult
 from equitytrace.factors.registry import UnknownFactorError, get_factor, normalize_factor_name
 from equitytrace.market.models import DailyPriceBar, MarketInstrument
+from equitytrace.market.splits import SPLIT_HISTORY_NON_VINTAGE_WARNING
 from equitytrace.models import utc_now
 from equitytrace.portfolio.audit import audit_decision, build_audit_result
 from equitytrace.portfolio.baselines import (
@@ -47,6 +48,7 @@ from equitytrace.portfolio.models import (
     PortfolioState,
     RebalanceRecord,
     RebalanceStatus,
+    SignalSelection,
     TieAtCutoff,
     WeightTransition,
 )
@@ -355,8 +357,8 @@ class BacktestEngine:
                     nav_events.append(attempt.record.post_cost_nav)
                 rebalances.append(attempt.record)
                 mixed = mixed or attempt.selection_mixed
-                if attempt.tie_at_cutoff:
-                    _append_unique(warnings, TOP_N_TIE_WARNING)
+                for extra_warning in attempt.extra_warnings:
+                    _append_unique(warnings, extra_warning)
 
             drawdown = state.nav / peak - 1.0
             equity.append(
@@ -494,7 +496,7 @@ class BacktestEngine:
         return _RebalanceAttempt(
             record=record,
             selection_mixed=mixed,
-            tie_at_cutoff=target.selection.tie_at_cutoff is not None,
+            extra_warnings=_selection_warnings(target.selection),
         )
 
     def _form_target(
@@ -669,7 +671,20 @@ class BacktestEngine:
 class _RebalanceAttempt:
     record: RebalanceRecord
     selection_mixed: bool = False
-    tie_at_cutoff: bool = False
+    extra_warnings: tuple[str, ...] = ()
+
+
+def _selection_warnings(selection: SignalSelection) -> tuple[str, ...]:
+    """Run-level warnings implied by the executed selection."""
+    found: list[str] = []
+    if selection.tie_at_cutoff is not None:
+        found.append(TOP_N_TIE_WARNING)
+    for row in selection.ranked:
+        market_input = row.result.market_input
+        if market_input is not None and SPLIT_HISTORY_NON_VINTAGE_WARNING in market_input.warnings:
+            found.append(SPLIT_HISTORY_NON_VINTAGE_WARNING)
+            break
+    return tuple(found)
 
 
 def request_lookback_days() -> int:

@@ -626,6 +626,15 @@ def test_valuation_signal_provenance_keeps_market_input(db: Database) -> None:
     stored = json.loads(loaded.rebalances[0].transitions[0].signal_provenance_json or "{}")
     assert stored["market_input"]["price_adjustment_mode"] == "none"
     assert stored["market_input"]["sec_accession"] == "aaa-shares-2023"
+    # Retrospective split history must be visible at run level, in audit and in the report.
+    from equitytrace.reporting.html import render_research_report
+
+    assert "split_history_not_vendor_vintage_pit" in loaded.warnings
+    assert loaded.audit is not None
+    assert "split_history_not_vendor_vintage_pit" in loaded.audit.warnings
+    html = render_research_report(loaded)
+    assert "retrospectively from the provider" in html
+    assert "split_history_not_vendor_vintage_pit" in html
 
 
 def test_universe_order_and_mixed_case_duplicates_are_deterministic(db: Database) -> None:

@@ -23,6 +23,9 @@ _MAX_CHART_POINTS = 2_000
 
 _METHODOLOGY_LIMITATIONS = (
     "Provider-adjusted price history is not vintage point-in-time price history.",
+    "Market capitalization (valuation factors) reconciles share counts to stock splits "
+    "using split history retrieved retrospectively from the provider; it is not "
+    "vendor-vintage point-in-time evidence.",
     "User-supplied universes can contain survivorship bias.",
     "Calendar decisions precede next-session target effectiveness.",
     "Holdings drift and transaction costs are modeled by EquityTrace; "
