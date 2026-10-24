@@ -14,7 +14,7 @@ carry warning `provider_adjusted_history_not_vintage_pit`.
 These live under `src/equitytrace/factors/` and use `FactorEngine` /
 `FinancialPeriod`. Market cap is resolved by `MarketCapService`:
 
-* `market_date = as_of.date()`
+* `market_date = the U.S. Eastern calendar date of as_of`
 * knowledge time = `as_of`
 * raw close only
 * PIT SEC shares, staleness, multi-class refusal
