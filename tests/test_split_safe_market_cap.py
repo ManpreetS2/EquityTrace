@@ -138,7 +138,9 @@ def test_parse_split_ratio_four_for_one_and_reverse() -> None:
 
 
 @pytest.mark.parametrize("field", ["from_factor", "to_factor", "source_ratio"])
-@pytest.mark.parametrize("bad", ["NaN", "sNaN", "Infinity", "-Infinity", float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "bad", ["NaN", "sNaN", "Infinity", "-Infinity", float("nan"), float("inf")]
+)
 def test_nonfinite_split_factor_rejected_as_validation_error(field: str, bad: object) -> None:
     # A malformed provider row must fail closed, not raise decimal.InvalidOperation
     # or propagate infinite market-cap multipliers into persisted research results.
