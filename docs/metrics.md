@@ -144,6 +144,24 @@ unless they are also universe tickers. An explicit universe that resolves more
 than one ticker to the same CIK is unavailable
 (`multiple_securities_same_issuer_unsupported`) rather than guessed.
 
+### Ties at the top-N cutoff
+
+Exactly `top_n` names are held. When several names share the factor value at the
+cutoff (common for `basic_quality_score`, which takes only 7 distinct values with
+default weights), the names kept are the alphabetically first tickers of the tied
+group (`ticker_ascending`). This is deterministic and unchanged for backward
+compatibility, but it is **not an economic choice**: renaming a ticker can change
+the holdings.
+
+Whenever the cutoff splits a tie in an executed rebalance, the run carries the
+warning `top_n_tie_at_cutoff`. The detail (factor value, `rule`, `tied_tickers`,
+`selected_tickers`, `excluded_tickers`) is stored in `signal_provenance_json` of
+each selected weight transition, so it persists with the run and appears in the
+JSON export (`result.rebalances[].transitions[]`), the audit warnings, and the
+HTML report ("Top-N tie at cutoff" table). Ties that fall entirely inside or
+entirely outside the selection do not trigger it. There is no configurable tie
+policy in v1.0.
+
 ### Schedules
 
 * `explicit` — first-seen unique dates, then chronological. Every remaining

@@ -666,6 +666,8 @@ def test_top_n_cutoff_does_not_include_extra_ties(db: Database) -> None:
     assert result.status is PortfolioRunStatus.SUCCESS
     held = [row.symbol for row in result.rebalances[0].transitions if row.target_weight_after > 0]
     assert held == ["AAA", "BBB"]
+    # The alphabetical tie-break is deterministic but must be disclosed (issue #23).
+    assert "top_n_tie_at_cutoff" in result.warnings
 
 
 def test_equal_weight_no_names_unavailable() -> None:
