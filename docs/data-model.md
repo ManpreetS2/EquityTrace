@@ -16,6 +16,8 @@ release.
 | Factor value | `(ticker, factor, fy, fp, as_of)` | Optional materialized factor output |
 | Market instrument | `instrument_id` | Durable market identity; display symbol is unique in v0.3a |
 | Daily price bar | `(instrument_id, provider, trading_date, adjustment_mode)` | Raw and adjusted series coexist |
+| Stock split event | `event_id` | Verified split with effective date and share multiplier |
+| Stock split coverage | `coverage_id` | Verified provider history window (not implied by empty events) |
 | Portfolio run | `run_id` | Native research backtest (v0.3c) |
 
 An issuer is **not** a ticker. Share classes and secondary listings are modeled as securities.
@@ -32,7 +34,7 @@ Records applied logical schema versions. Initialization is idempotent via
 `CREATE TABLE IF NOT EXISTS` plus `ON CONFLICT DO NOTHING`.
 
 Current labels: `0.2.0`, `0.3.0-a` (legacy alias `0.3.0a`), `0.3.0-a1`,
-`0.3.0-a2`, `0.3.0-b`, `0.3.0-c`.
+`0.3.0-a2`, `0.3.0-b`, `0.3.0-c`, `1.0.0-a` (stock-split events + coverage).
 
 ### factor_runs
 
@@ -89,6 +91,17 @@ Additive v0.3a tables. `daily_price_bars` is unique on
 series coexist. Prices use `DECIMAL(18, 6)` storage. `available_at` is the
 exchange-local 16:15 convention converted to UTC; `fetched_at` records when
 EquityTrace downloaded the bar.
+
+### stock_split_events / stock_split_coverage (migration `1.0.0-a`)
+
+Narrow additive tables for split-safe market cap. `stock_split_events` stores
+verified events with deterministic `event_id`, exact `from_factor` / `to_factor` /
+`share_multiplier` strings, modeled `available_at`, and `retrieved_at`.
+`stock_split_coverage` stores independently verified history windows
+(`status=verified|unknown|error`) with a completeness basis and limitations.
+Empty event lists never imply “no splits”; only coverage certifies a window.
+Both tables omit DuckDB FKs to `market_instruments` for the same parent-UPDATE
+reason as other market child tables.
 
 `market_symbol_mappings` uses a surrogate `mapping_id` primary key so the same
 provider symbol can be reused by a different instrument after a prior mapping

@@ -171,6 +171,19 @@ def _add_price(
         )
     if bars:
         repo.upsert_price_bars(bars)
+    # Explicit synthetic no-split coverage for the default shares→price gap used by
+    # these fixtures (shares fact end 2023-11-01). Not a claim that missing rows
+    # mean no corporate actions in production.
+    if raw_close is not None:
+        from helpers.split_coverage import seed_verified_split_coverage
+
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument.instrument_id,
+            coverage_start=date(2023, 11, 1),
+            coverage_end=trading_date,
+            provider_symbol=ticker,
+        )
 
 
 def _seed_alpha(db: Database) -> None:

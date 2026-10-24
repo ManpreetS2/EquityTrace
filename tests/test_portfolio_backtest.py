@@ -568,15 +568,25 @@ def test_valuation_signal_provenance_keeps_market_input(db: Database) -> None:
             ),
         )
         add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        from helpers.split_coverage import seed_verified_split_coverage
+
         for ticker, cik in (("AAA", "0001000001"), ("BBB", "0001000002")):
             points = [(day, 30.0) for day in days]
             add_adjusted_bars(conn, ticker, points, issuer_cik=cik)
-            add_adjusted_bars(
+            instrument_id = add_adjusted_bars(
                 conn,
                 ticker,
                 points,
                 issuer_cik=cik,
                 adjustment_mode=PriceAdjustmentMode.NONE,
+            )
+            # Shares fact ends 2023-12-31; decision prices are in early 2024.
+            seed_verified_split_coverage(
+                conn,
+                instrument_id=instrument_id,
+                coverage_start=date(2023, 12, 31),
+                coverage_end=D3,
+                provider_symbol=ticker,
             )
     result = run_backtest(
         db,

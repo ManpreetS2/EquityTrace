@@ -36,3 +36,16 @@ def bar_available_at(
         raise MarketDataValidationError(f"Unknown exchange timezone '{tz_name}'.") from exc
     local_dt = datetime.combine(trading_date, EOD_AVAILABILITY_LOCAL_TIME, tzinfo=tz)
     return local_dt.astimezone(ZoneInfo("UTC"))
+
+
+def modeled_split_available_at(
+    effective_date: date,
+    exchange_timezone: str = "America/New_York",
+) -> datetime:
+    """Conservative modeled eligibility after the effective session's EOD bar time.
+
+    This is an EquityTrace convention, not a claim about the vendor's actual
+    announcement or publication timestamp. Retrieved split history remains
+    retrospectively obtained and non-vintage.
+    """
+    return bar_available_at(effective_date, exchange_timezone)

@@ -268,9 +268,25 @@ Twelve Data access is required.
 
 EquityTrace stores **raw** (`adjustment_mode=none`) and **provider-adjusted**
 (`adjustment_mode=all`) daily OHLCV bars as separate rows. Market capitalization
-always uses **raw close × point-in-time SEC shares outstanding**. Valuation
-multiples use that PIT cap. Momentum, volatility, beta, and drawdown use
-adjusted closes and always warn `provider_adjusted_history_not_vintage_pit`.
+uses **raw close × split-reconciled point-in-time SEC shares**. When a stock
+split may fall between the selected shares fact date and the raw price date,
+EquityTrace requires verified split **events** plus independently stored
+**coverage** for that interval. An empty event list is not proof that no split
+occurred. Without verified coverage, market cap (and valuation factors that
+depend on it) are **unavailable** rather than silently wrong. Adjusted-price
+history is never used to invent split ratios.
+
+Ingest splits explicitly (Twelve Data `GET /splits`, Grow/Venture+ plans, API
+credits per symbol). This does **not** run during factor calculation:
+
+```bash
+uv run equitytrace market ingest-splits AAPL --start 2020-01-01 --end 2024-12-31
+```
+
+Retrospectively retrieved split history is not vendor-vintage PIT; eligibility
+uses a modeled end-of-session convention. Valuation multiples use the
+split-safe PIT cap. Momentum, volatility, beta, and drawdown use adjusted
+closes and always warn `provider_adjusted_history_not_vintage_pit`.
 
 Daily bars become available at **16:15 exchange-local time** (converted to UTC).
 That is a conservative EquityTrace convention, not a claim about the exact
@@ -288,10 +304,12 @@ only as an `Authorization: apikey <key>` header — never as a URL query
 parameter — and CLI logging keeps `httpx`/`httpcore` at WARNING even with
 `--verbose`. Review the provider’s licensing before redistribution, display, or
 commercial use. Live responses and caches stay under ignored `data/` paths and
-are never committed.
+are never committed. EquityTrace outputs are research tooling, not investment
+advice.
 
 ```bash
 uv run equitytrace market ingest AAPL --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market ingest-splits AAPL --start 2020-01-01 --end 2024-12-31
 uv run equitytrace market ingest SPY --asset-type etf --start 2020-01-01 --end 2024-12-31
 uv run equitytrace market prices AAPL --start 2023-01-01 --end 2023-12-31 --adjustment none
 uv run equitytrace market cap AAPL --date 2023-09-29
