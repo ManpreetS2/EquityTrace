@@ -68,6 +68,15 @@ same command.
 uv run equitytrace ingest AAPL
 ```
 
+The research strategy in §7 (`examples/strategies/basic_quality.json`) ranks
+**AAPL, MSFT and GOOGL** with `top_n: 2`. If fewer than two names have valid
+factor values the run is UNAVAILABLE (exit `2`), so ingest all three now:
+
+```bash
+uv run equitytrace ingest MSFT
+uv run equitytrace ingest GOOGL
+```
+
 ## 5. Explore statements and valuation factors
 
 ```bash
@@ -98,13 +107,29 @@ uv run equitytrace rank \
 ```bash
 # set EQUITYTRACE_TWELVE_DATA_API_KEY in .env first
 uv run equitytrace market ingest AAPL --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market ingest MSFT --start 2020-01-01 --end 2024-12-31
+uv run equitytrace market ingest GOOGL --start 2020-01-01 --end 2024-12-31
 uv run equitytrace market ingest SPY --asset-type etf --start 2020-01-01 --end 2024-12-31
+# Market cap and valuation factors need verified split coverage (see below):
+uv run equitytrace market ingest-splits AAPL --start 2020-01-01 --end 2024-12-31
 uv run equitytrace market cap AAPL --date 2023-03-31
 uv run equitytrace market analytics AAPL --as-of 2024-12-31 --benchmark SPY
 uv run equitytrace market rank-metric momentum_12_1 AAPL MSFT --as-of 2024-12-31
 ```
 
 SEC-only workflows do not need a market-data key. Beta ranking is refused.
+
+Live ingestion makes several Twelve Data calls (four `market ingest` commands
+above, plus one `ingest-splits` per ticker you value). The free tier is rate
+limited; if a command reports a rate-limit error, wait a minute and re-run it.
+`ingest-splits` uses Twelve Data `/splits`, which needs a paid plan; without it,
+market cap and the valuation factors that depend on it are reported unavailable
+(never silently wrong). The §7 strategy (`basic_quality_score`) does not use
+market cap, and it needs the SPY and per-ticker bars from `market ingest`.
+
+Every `--as-of` / `--date` cutoff uses one rule: a date-only value means the
+end of that day in U.S. Eastern time, a datetime without a zone is U.S. Eastern,
+and an explicit `Z` or offset is honored as given.
 
 ## 7. Research strategy and reports (v1.0)
 
