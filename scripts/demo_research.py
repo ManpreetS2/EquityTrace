@@ -48,6 +48,18 @@ BANNER = (
 )
 
 
+def _label_report(html: str) -> str:
+    """Stamp the standalone demo report so it cannot be mistaken for real results."""
+    marker = '<main class="page">\n'
+    if marker not in html:
+        raise RuntimeError("Report layout changed; cannot place the synthetic-demo label.")
+    banner = (
+        '<p role="note" style="border:2px solid #b45309;background:#fef3c7;color:#451a03;'
+        f'padding:12px;font-weight:bold">{BANNER}</p>\n'
+    )
+    return html.replace(marker, marker + banner, 1)
+
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -283,12 +295,13 @@ def run_demo(*, output_dir: Path, keep_db: bool = False) -> dict[str, object]:
 
         report_path = output_dir / "research_report.html"
         export_dir = output_dir / "export"
-        html = render_research_report(loaded)
+        html = _label_report(render_research_report(loaded))
+        (output_dir / "SYNTHETIC_DEMO.txt").write_text(BANNER + "\n", encoding="utf-8")
         write_html_report(report_path, html, force=True)
         request_json, result_json = export_run_json(loaded, export_dir, force=True)
 
         # Byte-identical regeneration check for the same persisted run.
-        if render_research_report(loaded) != html:
+        if _label_report(render_research_report(loaded)) != html:
             raise RuntimeError("HTML report is not deterministic for the persisted run.")
         export_b = output_dir / "export_repeat"
         req_b, res_b = export_run_json(loaded, export_b, force=True)
@@ -299,7 +312,7 @@ def run_demo(*, output_dir: Path, keep_db: bool = False) -> dict[str, object]:
         if (
             write_html_report(
                 output_dir / "research_report_repeat.html",
-                render_research_report(loaded),
+                _label_report(render_research_report(loaded)),
                 force=True,
             ).read_bytes()
             != report_path.read_bytes()

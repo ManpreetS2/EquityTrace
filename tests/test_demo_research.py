@@ -50,6 +50,9 @@ def test_offline_demo_succeeds_and_is_economically_reproducible(tmp_path: Path) 
     assert str(summary_a["fingerprint"]) in report_a
     assert str(summary_b["fingerprint"]) in report_b
     assert "Research status: SUCCESS" in report_a
+    assert "SYNTHETIC DEMO ONLY" in report_a and "SYNTHETIC DEMO ONLY" in report_b
+    assert "not historical investment performance" in report_a
+    assert (out_a / "SYNTHETIC_DEMO.txt").read_text(encoding="utf-8").startswith("SYNTHETIC")
     assert "Research status: SUCCESS" in report_b
     assert "AAA" in report_a and "BBB" in report_a
     assert "Benchmark NAV" in report_a or "benchmark" in report_a.lower()
@@ -99,8 +102,8 @@ def test_demo_html_and_json_byte_identical_for_one_persisted_run(tmp_path: Path)
     first = html_path.read_bytes()
     payload = json.loads(Path(str(summary["result_json"])).read_text(encoding="utf-8"))
     loaded = BacktestResult.model_validate(payload["result"])
-    second = render_research_report(loaded).encode("utf-8")
-    third = render_research_report(loaded).encode("utf-8")
+    second = demo._label_report(render_research_report(loaded)).encode("utf-8")
+    third = demo._label_report(render_research_report(loaded)).encode("utf-8")
     assert second == third
     assert first == second
     assert fingerprint_request(loaded.request) == summary["fingerprint"]
