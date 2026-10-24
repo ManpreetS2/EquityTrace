@@ -63,6 +63,18 @@ Strategy **name/description** live in the JSON file only. Durable identity is
 `run_id` plus the SHA-256 economic fingerprint of the canonical
 `BacktestRequest`.
 
+The `--as-of` option on every command (`statements`, `factor`, `factors`, `rank`,
+`facts-as-of`, `market cap`, `market analytics`, `market rank-metric`) uses one parser
+(`equitytrace.timeutil.parse_as_of`) and one rule, so the same string always resolves to
+the same UTC instant:
+
+- `2024-02-15` (date only) = **end of that day, 23:59:59 U.S. Eastern**.
+- `2024-02-15T16:30:00` (no zone) = **U.S. Eastern** wall time, like SEC acceptance times.
+- `2024-02-15T16:30:00Z` or with an offset = that exact instant.
+
+The cutoff is `available_at <= as_of`. This replaces the earlier behavior where some
+commands treated date-only values as 23:59:59 UTC or midnight UTC and naive datetimes as UTC.
+
 ## Architecture overview
 
 ```text

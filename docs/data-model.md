@@ -69,6 +69,7 @@ SEC acceptance:
 
 - timestamps with `Z` or an explicit offset are absolute instants (stored UTC)
 - naive acceptance timestamps are U.S. Eastern wall time, then converted to UTC
+- `--as-of` CLI values follow the same convention (date-only = end of that Eastern day); see the README
 - missing or date-only acceptance uses filing-date end-of-day Eastern fallback
 
 Never start-of-day filing date. Never report period end date.
