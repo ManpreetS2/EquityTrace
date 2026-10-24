@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
@@ -25,6 +25,7 @@ from equitytrace.market.models import AssetType, PriceAdjustmentMode
 from equitytrace.market.providers.errors import MarketDataError
 from equitytrace.market.service import MarketDataService
 from equitytrace.repositories.market import MarketRepository
+from equitytrace.timeutil import AS_OF_HELP, parse_as_of
 
 console = Console()
 err_console = Console(stderr=True)
@@ -254,7 +255,7 @@ def market_cap_cmd(
     market_date: Annotated[str, typer.Option("--date", help="Market date YYYY-MM-DD")],
     as_of: Annotated[
         str | None,
-        typer.Option("--as-of", help="Optional later knowledge time (ISO datetime)"),
+        typer.Option("--as-of", help=AS_OF_HELP),
     ] = None,
     max_price_staleness_days: Annotated[
         int,
@@ -276,8 +277,7 @@ def market_cap_cmd(
         day = _parse_date(market_date, "date")
         knowledge = None
         if as_of:
-            parsed = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
-            knowledge = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+            knowledge = parse_as_of(as_of)
     except ValueError as exc:
         _user_error(str(exc))
     if max_price_staleness_days < 0:
@@ -397,7 +397,10 @@ def market_analytics_cmd(
     symbol: Annotated[str, typer.Argument(help="Canonical symbol, e.g. AAPL")],
     as_of_date: Annotated[
         str,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ],
     benchmark: Annotated[
         str,
@@ -412,7 +415,7 @@ def market_analytics_cmd(
     clear_settings_cache()
     settings = get_settings()
     try:
-        as_of = _parse_as_of(as_of_date)
+        as_of = parse_as_of(as_of_date)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -454,7 +457,10 @@ def market_rank_metric_cmd(
     tickers: Annotated[list[str], typer.Argument(help="Tickers to rank")],
     as_of_date: Annotated[
         str,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ],
     benchmark: Annotated[
         str,
@@ -474,7 +480,7 @@ def market_rank_metric_cmd(
     if not symbols:
         _user_error("Provide at least one ticker.")
     try:
-        as_of = _parse_as_of(as_of_date)
+        as_of = parse_as_of(as_of_date)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -522,17 +528,6 @@ def market_rank_metric_cmd(
         for symbol, reason in ranking.excluded:
             excluded.add_row(symbol, reason)
         console.print(excluded)
-
-
-def _parse_as_of(value: str) -> datetime:
-    text = value.strip()
-    if "T" in text or " " in text:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    day = date.fromisoformat(text)
-    return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=UTC)
 
 
 def _cap_to_dict(result: Any) -> dict[str, Any]:

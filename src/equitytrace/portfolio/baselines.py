@@ -29,7 +29,7 @@ def inverse_volatility(matrix: ReturnMatrix) -> dict[str, float]:
     raw: dict[str, float] = {}
     for symbol in matrix.symbols:
         series = matrix.returns[symbol]
-        if len(series) < 2:
+        if len(series) < 2 or not all(math.isfinite(value) for value in series):
             raise BaselineUnavailable("baseline_unavailable")
         sigma = statistics.stdev(series)
         if not math.isfinite(sigma) or sigma <= 0:
