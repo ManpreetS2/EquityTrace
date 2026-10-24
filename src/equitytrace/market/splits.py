@@ -252,8 +252,10 @@ def _positive_decimal(value: object, label: str) -> Decimal:
         parsed = Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise SplitRatioError(f"{label} is not a valid decimal: {value!r}") from exc
-    if parsed <= 0:
-        raise SplitRatioError(f"{label} must be positive, got {parsed}")
+    # Reject NaN (including signaling NaN) and infinities before comparing.
+    # NaN otherwise raises decimal.InvalidOperation; +Infinity would pass.
+    if not parsed.is_finite() or parsed <= 0:
+        raise SplitRatioError(f"{label} must be finite and positive, got {parsed}")
     return parsed
 
 
