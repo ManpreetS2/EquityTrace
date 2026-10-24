@@ -379,6 +379,64 @@ def test_post_split_shares_fact_no_double_count(
     assert result.split_event_ids == ()
 
 
+@pytest.mark.parametrize(
+    ("split_day", "expected_cap", "expected_reason"),
+    [
+        # Split after period end but before the filing became public: the reported
+        # count may already be post-split, so refuse instead of double-counting.
+        (date(2023, 2, 1), None, "split_share_basis_ambiguous"),
+        # Split on the filing day itself is equally ambiguous.
+        (date(2023, 2, 20), None, "split_share_basis_ambiguous"),
+        # Split strictly after the filing was public: the count is pre-split.
+        (date(2023, 2, 21), Decimal("800000000"), None),
+    ],
+)
+def test_split_between_period_end_and_filing_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    split_day: date,
+    expected_cap: Decimal | None,
+    expected_reason: str | None,
+) -> None:
+    settings = _settings(tmp_path, monkeypatch)
+    db = initialize_database(settings.database_path)
+    with db.session() as conn:
+        _seed_issuer(conn)
+        _seed_shares(
+            conn,
+            value=4_000_000,
+            end=date(2022, 12, 31),
+            available=datetime(2023, 2, 20, 12, tzinfo=UTC),
+        )
+        instrument_id = _seed_raw_price(
+            conn,
+            ticker="AAA",
+            cik="0001000001",
+            trading_date=date(2023, 3, 1),
+            close=Decimal("50"),
+        )
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument_id,
+            coverage_start=date(2022, 12, 1),
+            coverage_end=date(2023, 3, 1),
+            provider_symbol="AAA",
+        )
+        seed_split_event(
+            conn,
+            instrument_id=instrument_id,
+            provider_symbol="AAA",
+            effective_date=split_day,
+            from_factor=4,
+            to_factor=1,
+            description="4-for-1 split",
+            source_ratio="0.25",
+        )
+        result = MarketCapService(conn).get_market_cap("AAA", date(2023, 3, 1))
+    assert result.unavailable_reason == expected_reason
+    assert result.market_cap == expected_cap
+
+
 def test_genuine_no_split_with_verified_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

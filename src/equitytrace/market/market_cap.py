@@ -231,6 +231,7 @@ class MarketCapService:
             knowledge_time=knowledge_time,
             coverage=coverage,
             events=events,
+            shares_available_at=shares.available_at,
         )
         warnings.extend(reconciliation.warnings)
 

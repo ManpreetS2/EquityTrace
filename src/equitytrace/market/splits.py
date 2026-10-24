@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from equitytrace.market.models import StockSplitCoverage, StockSplitEvent
 
 # Retrospectively retrieved provider split history is not vendor-vintage PIT.
 SPLIT_HISTORY_NON_VINTAGE_WARNING = "split_history_not_vendor_vintage_pit"
+SPLIT_SHARE_BASIS_AMBIGUOUS = "split_share_basis_ambiguous"
 SPLIT_ELIGIBILITY_CONVENTION_WARNING = "split_available_at_modeled_eod_convention"
 
 _DESCRIPTION_PATTERN = re.compile(
@@ -171,8 +172,16 @@ def reconcile_share_basis(
     knowledge_time: datetime,
     coverage: StockSplitCoverage | None,
     events: list[StockSplitEvent],
+    shares_available_at: datetime | None = None,
 ) -> ShareBasisReconciliation:
-    """Reconcile SEC shares to the raw-price share basis using verified splits."""
+    """Reconcile SEC shares to the raw-price share basis using verified splits.
+
+    ``shares_available_at`` is when the SEC fact became public. A split effective
+    after the fact's period end but on/before that filing date may or may not be
+    reflected in the reported count (balance-sheet shares are often restated for
+    splits that occur before issuance), so the share basis is ambiguous and the
+    result fails closed instead of risking a double-counted split.
+    """
     warnings: list[str] = []
 
     if shares_fact_date >= price_date:
@@ -227,6 +236,19 @@ def reconcile_share_basis(
             warnings=tuple(warnings),
             unavailable_reason=conflict,
         )
+
+    if shares_available_at is not None:
+        filing_day = shares_available_at.astimezone(UTC).date()
+        if any(event.effective_date <= filing_day for event in selected):
+            return ShareBasisReconciliation(
+                original_shares=original_shares,
+                reconciled_shares=original_shares,
+                share_multiplier=Decimal("1"),
+                events=(),
+                coverage=coverage,
+                warnings=tuple(warnings),
+                unavailable_reason=SPLIT_SHARE_BASIS_AMBIGUOUS,
+            )
 
     multiplier = cumulative_share_multiplier(selected)
     reconciled = original_shares * multiplier

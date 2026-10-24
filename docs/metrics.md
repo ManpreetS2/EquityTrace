@@ -69,6 +69,7 @@ and the raw price date.
 * `split_coverage_error` — coverage row present but marked error/incomplete
 * `split_coverage_starts_too_late` / `split_coverage_ends_before_price_date`
 * `conflicting_split_events` — same effective date, disagreeing multipliers
+* `split_share_basis_ambiguous` — a split became effective after the SEC share count's period end but on/before the filing became public; the reported count may already be post-split, so no market cap is produced (avoids double-counting)
 * `split_event_unavailable_at_knowledge_time` — an effective split in the gap
   is not yet eligible at the research cutoff (never reinterpreted as no-split)
 * `split_provider_symbol_ambiguous` — mapping gap or multi-symbol identity over
