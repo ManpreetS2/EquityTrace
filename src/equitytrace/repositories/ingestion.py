@@ -77,7 +77,7 @@ class IngestionRepository:
             filing_lookup = {f.accession_number: f for f in filings}
             facts = normalize_company_facts(company_facts, filings_by_accession=filing_lookup)
 
-            self._persist_atomic(
+            self._persist_snapshot(
                 issuer=issuer,
                 securities=securities,
                 filings=filings,
@@ -166,7 +166,7 @@ class IngestionRepository:
             "latest_successful_ingestion": latest,
         }
 
-    def _persist_atomic(
+    def _persist_snapshot(
         self,
         *,
         issuer: Issuer,

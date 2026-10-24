@@ -1,4 +1,4 @@
-# Architecture (1.0.0.dev0; latest published release v0.3.2)
+# Architecture (1.0.0; latest published release v0.3.2)
 
 EquityTrace is a layered Python application with a clear boundary between SEC I/O,
 normalization, persistence, canonical statements, factors, market data, and CLI.
@@ -132,7 +132,10 @@ transports or injected providers. No live SEC or Twelve Data calls in CI.
    - Raw and adjusted daily bars stored as distinct rows
    - Conservative `available_at` = exchange-local 16:15 → UTC (unknown timezones rejected)
    - Shares outstanding selected from stored SEC facts with point-in-time filters
-   - Market cap = raw close × shares; multi-class issuers are unavailable by default
+   - Market cap = raw close × split-reconciled shares when verified split coverage
+     exists for `(shares_fact_date, price_date]`; otherwise unavailable
+   - Explicit `market ingest-splits` uses Twelve Data `GET /splits` (paid plan);
+     never inferred from adjusted/raw price ratios; multi-class issuers unavailable
 
 10. **Market analytics (`equitytrace.market.analytics`)**
    - Window metrics from stored adjusted bars, not fiscal-period factors
@@ -180,4 +183,7 @@ offline document with inline SVG charts; JSON exports (`request.json`,
 `result.json`) are deterministic and include the economic fingerprint in export
 metadata. Report-generation success is distinct from research status
 (SUCCESS / UNAVAILABLE / FAILED). There is no schema change for this milestone.
-Additional optimizers and Milestone 3 productization are not in this tree yet.
+v1.0 Milestone 3 productizes the completed CLI + offline HTML workflow, ships an
+offline synthetic demonstration (`scripts/demo_research.py`), and prepares
+package version `1.0.0`. Publishing the annotated `v1.0.0` tag / GitHub Release
+is a separate approval step. Additional optimizers remain out of scope.

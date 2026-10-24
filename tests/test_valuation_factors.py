@@ -125,6 +125,8 @@ def _add_price(
     currency: str = "USD",
     available_at: datetime | None = None,
 ) -> None:
+    from helpers.split_coverage import seed_verified_split_coverage
+
     repo = MarketRepository(conn)  # type: ignore[arg-type]
     instrument = repo.get_or_create_instrument(ticker, issuer_cik=cik, security_ticker=ticker)
     fetched = datetime(2024, 1, 1, tzinfo=UTC)
@@ -160,6 +162,14 @@ def _add_price(
                 fetched_at=fetched,
             ),
         ]
+    )
+    # Explicit synthetic no-split coverage for the default shares→price gap.
+    seed_verified_split_coverage(
+        conn,
+        instrument_id=instrument.instrument_id,
+        coverage_start=date(2023, 11, 1),
+        coverage_end=trading_date,
+        provider_symbol=ticker,
     )
 
 
@@ -204,6 +214,22 @@ def test_fcf_yield_honors_as_of(db: Database) -> None:
         )
     assert early.valid is False
     assert later.valid and later.value == pytest.approx(0.1)
+
+
+def test_date_only_as_of_requests_the_eastern_market_date(db: Database) -> None:
+    """parse_as_of("D") is 04:59:59Z on D+1; the market date must still be D."""
+    from equitytrace.timeutil import parse_as_of
+
+    _native_cap(db)
+    with db.session() as conn:
+        result = FactorEngine(conn).calculate(
+            "ALPHA", "fcf_yield", "FY2023", as_of=parse_as_of(str(PRICE_DAY)), persist=False
+        )
+    assert result.valid
+    assert result.market_input is not None
+    assert result.market_input.market_date_requested == PRICE_DAY
+    assert result.market_input.price_date_used == PRICE_DAY
+    assert not any("used_prior_trading_day" in w for w in result.market_input.warnings)
 
 
 def test_fcf_yield_missing_shares_unavailable(db: Database) -> None:

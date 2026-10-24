@@ -19,6 +19,8 @@ LOOKBACK_CALENDAR_DAYS = 550
 ADJUSTED_HISTORY_WARNING = "provider_adjusted_history_not_vintage_pit"
 SURVIVORSHIP_WARNING = "survivorship_bias_possible"
 MIXED_PERIODS_WARNING = "mixed_fiscal_periods"
+TOP_N_TIE_WARNING = "top_n_tie_at_cutoff"
+TIE_RULE_TICKER_ASC = "ticker_ascending"
 SAME_ISSUER_UNAVAILABLE = "multiple_securities_same_issuer_unsupported"
 ISSUER_IDENTITY_UNAVAILABLE = "issuer_identity_unavailable"
 
@@ -204,10 +206,23 @@ class LeakageAuditResult(BaseModel):
     warnings: tuple[str, ...] = ()
 
 
+class TieAtCutoff(BaseModel):
+    """Names sharing the factor value at the top-N cutoff, split by the tie rule."""
+
+    model_config = ConfigDict(frozen=True)
+
+    factor_value: float | None
+    rule: str = TIE_RULE_TICKER_ASC
+    tied_tickers: tuple[str, ...]
+    selected_tickers: tuple[str, ...]
+    excluded_tickers: tuple[str, ...]
+
+
 class SignalSelection(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ranked: tuple[RankedFactorResult, ...]
+    tie_at_cutoff: TieAtCutoff | None = None
     mixed_fiscal_periods: bool = False
     evidence_available_at: dict[str, datetime] = Field(default_factory=dict)
     price_evidence_available_at: tuple[datetime, ...] = ()

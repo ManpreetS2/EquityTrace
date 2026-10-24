@@ -1,6 +1,6 @@
 # Research metrics
 
-Formulas and point-in-time rules for EquityTrace v0.3.2 valuation factors,
+Formulas and point-in-time rules for EquityTrace v1.0 valuation factors,
 market-window analytics, and native research backtests. Ambiguous inputs return `UNAVAILABLE` rather than a
 guess.
 
@@ -14,15 +14,104 @@ carry warning `provider_adjusted_history_not_vintage_pit`.
 These live under `src/equitytrace/factors/` and use `FactorEngine` /
 `FinancialPeriod`. Market cap is resolved by `MarketCapService`:
 
-* `market_date = as_of.date()`
+* `market_date = the U.S. Eastern calendar date of as_of`
 * knowledge time = `as_of`
 * raw close only
 * PIT SEC shares, staleness, multi-class refusal
+* **split-safe share basis** over `(shares_fact_date, price_date]`
 
 `--market-cap` remains a manual override and is labeled
 `manual_market_cap_override` (not stored market-data provenance).
 
 Canonical financials are USD. A non-USD market-cap currency is unavailable.
+
+### Stock splits and market cap (issue #22)
+
+Market cap is `raw close × reconciled shares`, not raw close × unadjusted SEC
+shares when a split changes the share basis between the selected shares fact
+and the raw price date.
+
+**Required evidence**
+
+* Verified stock-split **events** (instrument, provider symbol, effective date,
+  exact `from_factor` / `to_factor` share multiplier, provenance, retrieval time)
+* Independently stored **coverage** for a bounded interval. An empty event list
+  does **not** mean “no splits occurred”; only a verified coverage row may
+  certify that no event fell inside its window.
+
+**Rules**
+
+* Interval under review: `(shares_fact_date, raw_price_date]`
+* If that interval is empty (`fact_date == price_date`), no split check is needed
+* Otherwise require verified coverage fully containing the interval
+* Apply cumulative `from_factor / to_factor` multipliers for PIT-eligible events
+  in the interval (Twelve Data’s documented 4-for-1 example uses
+  `from_factor=4`, `to_factor=1`, `ratio=0.25` → share multiplier **4**, not 0.25)
+* Preserve original SEC shares; expose reconciled shares and event ids
+* Never infer splits from `adjustment_mode=all` vs raw prices or large moves
+* `PriceAdjustmentMode.SPLITS` remains reserved and is not a live series mode
+
+**Event eligibility**
+
+* Effective date is when the share basis changes
+* Research eligibility uses a modeled end-of-session convention
+  (`available_at` = exchange-local 16:15 on the effective date), labeled as a
+  convention — not the vendor’s real announcement timestamp
+* `retrieved_at` is when EquityTrace fetched the history; retrospectively
+  obtained `/splits` data is **not** vendor-vintage PIT
+* Warnings: `split_history_not_vendor_vintage_pit`,
+  `split_available_at_modeled_eod_convention`
+
+**Unavailable reasons (deterministic)**
+
+* `split_coverage_unavailable` — no verified coverage for the gap
+* `split_coverage_unknown` — coverage row present but not verified
+* `split_coverage_error` — coverage row present but marked error/incomplete
+* `split_coverage_starts_too_late` / `split_coverage_ends_before_price_date`
+* `conflicting_split_events` — same effective date, disagreeing multipliers
+* `split_share_basis_ambiguous` — a split became effective after the SEC share count's period end but on/before the filing became public; the reported count may already be post-split, so no market cap is produced (avoids double-counting)
+* `split_event_unavailable_at_knowledge_time` — an effective split in the gap
+  is not yet eligible at the research cutoff (never reinterpreted as no-split)
+* `split_provider_symbol_ambiguous` — mapping gap or multi-symbol identity over
+  the gap
+
+**Recovery after unavailable / failed coverage (accepted v1.0 behavior)**
+
+Split coverage is deliberately conservative. A failed, partial, or narrower refresh
+demotes overlapping verified coverage, and separately ingested windows are **not**
+combined: one verified window must span from the SEC shares fact date through the
+price date. Market cap and valuation factors then report the `split_coverage_*` reason
+rather than a possibly wrong number. To recover, re-ingest one range that covers the
+whole gap (start on or before the oldest shares fact date you need, end on or after the
+latest price date):
+
+```bash
+uv run equitytrace market ingest-splits AAPL --start 2020-01-01 --end 2024-12-31
+```
+
+**Not vendor-vintage point-in-time.** Split history is retrieved retrospectively, so a
+split that the provider only knew about later can affect earlier dates. This is
+acceptable for historical reconstruction but is never vendor-vintage PIT evidence. It is
+surfaced as `split_history_not_vendor_vintage_pit` on market-cap results, on the
+backtest run warnings and audit when a valuation signal was selected, and in the
+"Methodology limitations" section of the HTML report.
+
+When market cap is unavailable for these reasons, `fcf_yield`,
+`price_to_earnings`, `price_to_sales`, and `price_to_book` stay unavailable;
+ranking excludes them; backtest signal selection fails closed.
+
+**Ingestion**
+
+* Explicit CLI: `equitytrace market ingest-splits SYMBOL --start … --end …`
+* Twelve Data `GET /splits` (Grow/Venture+; ~20 credits/symbol). Not called
+  during factor calculation. Plan denial / auth failure / malformed rows /
+  conflicting rows write no VERIFIED coverage (fail closed). Empty parsed
+  events certify “no splits” only when the full response validated cleanly.
+* Completeness uses a conservative 10-year floor measured from the trusted
+  provider retrieval timestamp (Twelve Data `/splits` documents `start_date` /
+  `end_date` / `range`, but not a hard completeness SLA). Requested windows that
+  start before that floor, end after retrieval, or lack stamped retrieval
+  provenance stay UNKNOWN — never VERIFIED from an arbitrary request end date.
 
 ### FCF yield (`fcf_yield`)
 
@@ -143,6 +232,24 @@ multiple securities/share classes for one issuer. Every normalized research-univ
 unless they are also universe tickers. An explicit universe that resolves more
 than one ticker to the same CIK is unavailable
 (`multiple_securities_same_issuer_unsupported`) rather than guessed.
+
+### Ties at the top-N cutoff
+
+Exactly `top_n` names are held. When several names share the factor value at the
+cutoff (common for `basic_quality_score`, which takes only 7 distinct values with
+default weights), the names kept are the alphabetically first tickers of the tied
+group (`ticker_ascending`). This is deterministic and unchanged for backward
+compatibility, but it is **not an economic choice**: renaming a ticker can change
+the holdings.
+
+Whenever the cutoff splits a tie in an executed rebalance, the run carries the
+warning `top_n_tie_at_cutoff`. The detail (factor value, `rule`, `tied_tickers`,
+`selected_tickers`, `excluded_tickers`) is stored in `signal_provenance_json` of
+each selected weight transition, so it persists with the run and appears in the
+JSON export (`result.rebalances[].transitions[]`), the audit warnings, and the
+HTML report ("Top-N tie at cutoff" table). Ties that fall entirely inside or
+entirely outside the selection do not trigger it. There is no configurable tie
+policy in v1.0.
 
 ### Schedules
 

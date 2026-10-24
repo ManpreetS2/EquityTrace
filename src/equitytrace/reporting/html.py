@@ -10,6 +10,7 @@ from typing import Any
 
 from equitytrace.factors.registry import UnknownFactorError, get_factor
 from equitytrace.portfolio.models import (
+    TOP_N_TIE_WARNING,
     BacktestResult,
     EquityPoint,
     PerformanceMetrics,
@@ -22,12 +23,20 @@ _MAX_CHART_POINTS = 2_000
 
 _METHODOLOGY_LIMITATIONS = (
     "Provider-adjusted price history is not vintage point-in-time price history.",
+    "Market capitalization (valuation factors) reconciles share counts to stock splits "
+    "using split history retrieved retrospectively from the provider; it is not "
+    "vendor-vintage point-in-time evidence.",
     "User-supplied universes can contain survivorship bias.",
     "Calendar decisions precede next-session target effectiveness.",
     "Holdings drift and transaction costs are modeled by EquityTrace; "
     "this is not a share/fill broker simulation.",
     "No intraday, order-book, borrow, or short-sale model is applied.",
     "Outputs are reproducible research artifacts, not investment advice.",
+)
+
+
+HYPOTHETICAL_NOTICE = (
+    "These are hypothetical, backtested research results, not actual trading performance."
 )
 
 
@@ -222,6 +231,7 @@ def _section_performance(result: BacktestResult, *, success: bool) -> str:
         )
     return _section(
         "Performance summary",
+        f'<p class="hypothetical">{HYPOTHETICAL_NOTICE}</p>'
         "<p>Values below are exactly the persisted metrics for this run.</p>"
         + _metrics_table(result.metrics, result.final_nav),
     )
@@ -673,6 +683,7 @@ def _format_provenance(raw: str | None) -> str:
         "reporting_period",
         "period",
         "ranking_direction",
+        TOP_N_TIE_WARNING,
         "as_of",
         "available_at",
         "source_filings",
@@ -747,7 +758,51 @@ def _section_audit(result: BacktestResult) -> str:
             "<h3>Unavailable / failure reason</h3>"
             f"<p><code>{_esc(result.failure_reason)}</code></p>"
         )
-    return _section("Audit and run warnings", audit_block + warning_block + failure)
+    return _section(
+        "Audit and run warnings", audit_block + warning_block + _tie_notes(result) + failure
+    )
+
+
+def _tie_notes(result: BacktestResult) -> str:
+    """List every rebalance where the top-N cutoff split a group of tied factor values."""
+    rows: list[str] = []
+    for rebalance in result.rebalances:
+        seen: set[str] = set()
+        for transition in rebalance.transitions:
+            if not transition.signal_provenance_json:
+                continue
+            try:
+                payload = json.loads(transition.signal_provenance_json)
+            except json.JSONDecodeError:
+                continue
+            tie = payload.get(TOP_N_TIE_WARNING) if isinstance(payload, dict) else None
+            if not isinstance(tie, dict):
+                continue
+            key = json.dumps(tie, sort_keys=True)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                "<tr>"
+                f"<td>{_esc(_fmt_ts(rebalance.decision_at))}</td>"
+                f"<td>{_esc(tie.get('factor_value'))}</td>"
+                f"<td>{_esc(', '.join(tie.get('tied_tickers', [])))}</td>"
+                f"<td>{_esc(', '.join(tie.get('selected_tickers', [])))}</td>"
+                f"<td>{_esc(', '.join(tie.get('excluded_tickers', [])))}</td>"
+                f"<td><code>{_esc(tie.get('rule'))}</code></td>"
+                "</tr>"
+            )
+    if not rows:
+        return ""
+    return (
+        "<h3>Top-N tie at cutoff</h3>"
+        "<p>At these rebalances several names shared the factor value at the top-N "
+        "cutoff. The names held were chosen by ticker spelling (alphabetical), not by "
+        "the factor; renaming a ticker could change the holdings.</p>"
+        '<div class="table-wrap"><table><thead><tr><th>Decision</th><th>Factor value</th>'
+        "<th>Tied tickers</th><th>Selected</th><th>Excluded</th><th>Rule</th></tr></thead>"
+        "<tbody>" + "".join(rows) + "</tbody></table></div>"
+    )
 
 
 def _section_limitations(result: BacktestResult) -> str:

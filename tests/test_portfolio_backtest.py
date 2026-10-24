@@ -568,15 +568,25 @@ def test_valuation_signal_provenance_keeps_market_input(db: Database) -> None:
             ),
         )
         add_adjusted_bars(conn, "SPY", [(day, 100.0) for day in days])
+        from helpers.split_coverage import seed_verified_split_coverage
+
         for ticker, cik in (("AAA", "0001000001"), ("BBB", "0001000002")):
             points = [(day, 30.0) for day in days]
             add_adjusted_bars(conn, ticker, points, issuer_cik=cik)
-            add_adjusted_bars(
+            instrument_id = add_adjusted_bars(
                 conn,
                 ticker,
                 points,
                 issuer_cik=cik,
                 adjustment_mode=PriceAdjustmentMode.NONE,
+            )
+            # Shares fact ends 2023-12-31; decision prices are in early 2024.
+            seed_verified_split_coverage(
+                conn,
+                instrument_id=instrument_id,
+                coverage_start=date(2023, 12, 31),
+                coverage_end=D3,
+                provider_symbol=ticker,
             )
     result = run_backtest(
         db,
@@ -616,6 +626,15 @@ def test_valuation_signal_provenance_keeps_market_input(db: Database) -> None:
     stored = json.loads(loaded.rebalances[0].transitions[0].signal_provenance_json or "{}")
     assert stored["market_input"]["price_adjustment_mode"] == "none"
     assert stored["market_input"]["sec_accession"] == "aaa-shares-2023"
+    # Retrospective split history must be visible at run level, in audit and in the report.
+    from equitytrace.reporting.html import render_research_report
+
+    assert "split_history_not_vendor_vintage_pit" in loaded.warnings
+    assert loaded.audit is not None
+    assert "split_history_not_vendor_vintage_pit" in loaded.audit.warnings
+    html = render_research_report(loaded)
+    assert "retrospectively from the provider" in html
+    assert "split_history_not_vendor_vintage_pit" in html
 
 
 def test_universe_order_and_mixed_case_duplicates_are_deterministic(db: Database) -> None:
@@ -666,6 +685,8 @@ def test_top_n_cutoff_does_not_include_extra_ties(db: Database) -> None:
     assert result.status is PortfolioRunStatus.SUCCESS
     held = [row.symbol for row in result.rebalances[0].transitions if row.target_weight_after > 0]
     assert held == ["AAA", "BBB"]
+    # The alphabetical tie-break is deterministic but must be disclosed (issue #23).
+    assert "top_n_tie_at_cutoff" in result.warnings
 
 
 def test_equal_weight_no_names_unavailable() -> None:

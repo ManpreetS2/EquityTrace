@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Any
@@ -25,6 +25,7 @@ from equitytrace.market.models import AssetType, PriceAdjustmentMode
 from equitytrace.market.providers.errors import MarketDataError
 from equitytrace.market.service import MarketDataService
 from equitytrace.repositories.market import MarketRepository
+from equitytrace.timeutil import AS_OF_HELP, parse_as_of
 
 console = Console()
 err_console = Console(stderr=True)
@@ -52,6 +53,74 @@ def _dec(value: Decimal | None) -> str:
     if value is None:
         return "—"
     return format(value, "f")
+
+
+@market_app.command("ingest-splits")
+def market_ingest_splits(
+    symbol: Annotated[str, typer.Argument(help="Canonical symbol, e.g. AAPL")],
+    start: Annotated[str, typer.Option("--start", help="Inclusive coverage start YYYY-MM-DD")],
+    end: Annotated[str, typer.Option("--end", help="Inclusive coverage end YYYY-MM-DD")],
+    provider_symbol: Annotated[
+        str | None,
+        typer.Option("--provider-symbol", help="Override provider symbol"),
+    ] = None,
+    asset_type: Annotated[
+        str,
+        typer.Option("--asset-type", help="equity|etf|index"),
+    ] = "equity",
+    database: Annotated[
+        Path | None,
+        typer.Option("--database", help="DuckDB database path override."),
+    ] = None,
+) -> None:
+    """Ingest verified stock-split events and coverage for a bounded interval.
+
+    Uses Twelve Data GET /splits (paid Grow/Venture plan; credits per symbol).
+    Empty event lists establish no-split coverage only inside the requested
+    window. Does not run during factor calculation.
+    """
+    clear_settings_cache()
+    settings = get_settings()
+    try:
+        start_date = _parse_date(start, "start")
+        end_date = _parse_date(end, "end")
+        at = AssetType(asset_type.strip().lower())
+    except ValueError as exc:
+        _user_error(str(exc))
+    if start_date > end_date:
+        _user_error(f"start_date {start_date} is after end_date {end_date}.")
+    db_path = database or settings.database_path
+    try:
+        db = initialize_database(db_path)
+        with db.session() as conn:
+            result = MarketDataService(conn, settings).ingest_splits(
+                symbol,
+                start_date=start_date,
+                end_date=end_date,
+                asset_type=at,
+                provider_symbol=provider_symbol,
+            )
+    except (ConfigurationError, MarketDataError) as exc:
+        _user_error(str(exc))
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"status: {result.status.value}",
+                    f"symbol: {result.canonical_symbol}",
+                    f"provider_symbol: {result.provider_symbol}",
+                    f"events: {result.event_count}",
+                    f"coverage_id: {result.coverage_id or '—'}",
+                    f"coverage_status: "
+                    f"{result.coverage_status.value if result.coverage_status else '—'}",
+                    f"error: {result.error_summary or '—'}",
+                ]
+            ),
+            title="Split ingest",
+        )
+    )
+    if result.status.value == "failed":
+        raise typer.Exit(1)
 
 
 @market_app.command("ingest")
@@ -254,7 +323,7 @@ def market_cap_cmd(
     market_date: Annotated[str, typer.Option("--date", help="Market date YYYY-MM-DD")],
     as_of: Annotated[
         str | None,
-        typer.Option("--as-of", help="Optional later knowledge time (ISO datetime)"),
+        typer.Option("--as-of", help=AS_OF_HELP),
     ] = None,
     max_price_staleness_days: Annotated[
         int,
@@ -276,8 +345,7 @@ def market_cap_cmd(
         day = _parse_date(market_date, "date")
         knowledge = None
         if as_of:
-            parsed = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
-            knowledge = parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+            knowledge = parse_as_of(as_of)
     except ValueError as exc:
         _user_error(str(exc))
     if max_price_staleness_days < 0:
@@ -397,7 +465,10 @@ def market_analytics_cmd(
     symbol: Annotated[str, typer.Argument(help="Canonical symbol, e.g. AAPL")],
     as_of_date: Annotated[
         str,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ],
     benchmark: Annotated[
         str,
@@ -412,7 +483,7 @@ def market_analytics_cmd(
     clear_settings_cache()
     settings = get_settings()
     try:
-        as_of = _parse_as_of(as_of_date)
+        as_of = parse_as_of(as_of_date)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -454,7 +525,10 @@ def market_rank_metric_cmd(
     tickers: Annotated[list[str], typer.Argument(help="Tickers to rank")],
     as_of_date: Annotated[
         str,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ],
     benchmark: Annotated[
         str,
@@ -474,7 +548,7 @@ def market_rank_metric_cmd(
     if not symbols:
         _user_error("Provide at least one ticker.")
     try:
-        as_of = _parse_as_of(as_of_date)
+        as_of = parse_as_of(as_of_date)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -524,17 +598,6 @@ def market_rank_metric_cmd(
         console.print(excluded)
 
 
-def _parse_as_of(value: str) -> datetime:
-    text = value.strip()
-    if "T" in text or " " in text:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=UTC)
-        return parsed.astimezone(UTC)
-    day = date.fromisoformat(text)
-    return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=UTC)
-
-
 def _cap_to_dict(result: Any) -> dict[str, Any]:
     return {
         "ticker": result.ticker,
@@ -552,6 +615,14 @@ def _cap_to_dict(result: Any) -> dict[str, Any]:
         "shares_available_at": result.shares_available_at.isoformat()
         if result.shares_available_at
         else None,
+        "reconciled_shares_outstanding": str(result.reconciled_shares_outstanding)
+        if result.reconciled_shares_outstanding is not None
+        else None,
+        "split_share_multiplier": str(result.split_share_multiplier)
+        if result.split_share_multiplier is not None
+        else None,
+        "split_event_ids": list(result.split_event_ids),
+        "split_coverage_id": result.split_coverage_id,
         "market_cap": str(result.market_cap) if result.market_cap is not None else None,
         "price_provider": result.price_provider.value if result.price_provider else None,
         "price_adjustment_mode": result.price_adjustment_mode.value

@@ -1,0 +1,18 @@
+{
+  "name": "Synthetic ROA equal-weight demo",
+  "description": "SYNTHETIC DEMO ONLY. Uses fictional AAA/BBB evidence. Not investment advice and not historical performance.",
+  "tickers": ["BBB", "AAA"],
+  "factor": "roa",
+  "top_n": 2,
+  "baseline": "equal_weight",
+  "start_date": "2024-01-02",
+  "end_date": "2024-01-05",
+  "schedule": "explicit",
+  "explicit_dates": ["2024-01-03", "2024-01-02"],
+  "calendar_symbol": "SPY",
+  "benchmark_symbol": "SPY",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}

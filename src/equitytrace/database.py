@@ -241,6 +241,52 @@ CREATE INDEX IF NOT EXISTS idx_daily_bars_date ON daily_price_bars(trading_date)
 CREATE INDEX IF NOT EXISTS idx_daily_bars_available_at ON daily_price_bars(available_at);
 CREATE INDEX IF NOT EXISTS idx_market_data_runs_instrument ON market_data_runs(instrument_id);
 
+-- v1.0.0-a additive tables: verified stock-split events + coverage (issue #22).
+-- Empty event lists do not imply no splits; only a verified coverage row certifies
+-- the absence of events inside its [coverage_start, coverage_end] interval.
+CREATE TABLE IF NOT EXISTS stock_split_events (
+    event_id VARCHAR PRIMARY KEY,
+    instrument_id VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL,
+    provider_symbol VARCHAR NOT NULL,
+    effective_date DATE NOT NULL,
+    from_factor VARCHAR NOT NULL,
+    to_factor VARCHAR NOT NULL,
+    share_multiplier VARCHAR NOT NULL,
+    source_ratio VARCHAR,
+    description VARCHAR,
+    available_at TIMESTAMPTZ NOT NULL,
+    retrieved_at TIMESTAMPTZ NOT NULL,
+    source_metadata_json VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL
+    -- No FK: see market_symbol_mappings note (DuckDB parent UPDATE limitation).
+);
+
+CREATE TABLE IF NOT EXISTS stock_split_coverage (
+    coverage_id VARCHAR PRIMARY KEY,
+    instrument_id VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL,
+    provider_symbol VARCHAR NOT NULL,
+    coverage_start DATE NOT NULL,
+    coverage_end DATE NOT NULL,
+    status VARCHAR NOT NULL,
+    completeness_basis VARCHAR NOT NULL,
+    limitations_json VARCHAR,
+    retrieved_at TIMESTAMPTZ NOT NULL,
+    source_metadata_json VARCHAR,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL
+    -- No FK: see market_symbol_mappings note (DuckDB parent UPDATE limitation).
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_split_events_instrument
+    ON stock_split_events(instrument_id, effective_date);
+CREATE INDEX IF NOT EXISTS idx_stock_split_events_available
+    ON stock_split_events(available_at);
+CREATE INDEX IF NOT EXISTS idx_stock_split_coverage_instrument
+    ON stock_split_coverage(instrument_id, coverage_start, coverage_end);
+
 -- v0.3c additive tables (idempotent; safe for existing v0.3.1 databases)
 CREATE TABLE IF NOT EXISTS portfolio_runs (
     run_id VARCHAR PRIMARY KEY,
@@ -423,6 +469,17 @@ class Database:
                 [
                     "0.3.0-c",
                     "Native portfolio backtest runs, rebalances, transitions, equity",
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO schema_migrations (version, notes)
+                VALUES (?, ?)
+                ON CONFLICT (version) DO NOTHING
+                """,
+                [
+                    "1.0.0-a",
+                    "Verified stock-split events and coverage for split-safe market cap",
                 ],
             )
         logger.info("Initialized DuckDB schema at %s", self.path)

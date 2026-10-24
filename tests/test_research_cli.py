@@ -156,7 +156,7 @@ def test_run_success_persists_canonical_request(tmp_path: Path, monkeypatch) -> 
     )
     assert result.exit_code == 0
     assert expected in result.output
-    assert "package_version" in result.output or "1.0.0.dev0" in result.output
+    assert "package_version" in result.output or "1.0.0" in result.output
     assert "run_id=" in result.output
     assert "Final NAV" in result.output
     db = initialize_database(db_path)
@@ -257,7 +257,7 @@ def test_show_success_and_fingerprint_roundtrip(tmp_path: Path, monkeypatch) -> 
     )
     assert shown.exit_code == 0
     assert expected in shown.output
-    assert "1.0.0.dev0" in shown.output
+    assert "1.0.0" in shown.output
     assert "provider_adjusted_history_not_vintage_pit" in shown.output
     assert "audit_passed" in shown.output
     assert "rebalance_count" in shown.output

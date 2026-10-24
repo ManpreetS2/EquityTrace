@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from math import isfinite
 from uuid import uuid4
@@ -18,10 +18,16 @@ from equitytrace.financials.service import FinancialsError, FinancialsService
 from equitytrace.market.market_cap import MarketCapService
 from equitytrace.market.models import MarketCapResult
 from equitytrace.repositories.factors import FactorRepository
+from equitytrace.sec.normalization import EASTERN
 
 # Canonical statements are USD. A foreign-currency cap is not a usable multiple.
 _CANONICAL_CURRENCY = "USD"
 _MANUAL_MARKET_CAP_WARNING = "manual_market_cap_override"
+
+
+def _market_date(as_of: datetime) -> date:
+    """Exchange-local (U.S. Eastern) calendar date of the cutoff, not its UTC date."""
+    return (as_of if as_of.tzinfo else as_of.replace(tzinfo=UTC)).astimezone(EASTERN).date()
 
 
 class FactorEngine:
@@ -172,7 +178,7 @@ class FactorEngine:
             finite = isfinite(market_cap)
             override = MarketCapResult(
                 ticker=symbol,
-                market_date_requested=as_of.date(),
+                market_date_requested=_market_date(as_of),
                 knowledge_time=as_of,
                 market_cap=Decimal(str(market_cap)) if finite else None,
                 warnings=(_MANUAL_MARKET_CAP_WARNING,),
@@ -181,7 +187,7 @@ class FactorEngine:
             return market_cap, override
         native = self._market_cap.get_market_cap(
             symbol,
-            as_of.date(),
+            _market_date(as_of),
             as_of=as_of,
         )
         if native.is_available and native.market_cap is not None and not _currency_mismatch(native):

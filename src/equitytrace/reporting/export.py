@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from equitytrace.portfolio.models import BacktestResult
+from equitytrace.reporting.html import HYPOTHETICAL_NOTICE
 from equitytrace.strategy.models import fingerprint_request
 
 
@@ -37,6 +38,7 @@ def render_request_export(result: BacktestResult) -> str:
         "export_metadata": {
             "economic_fingerprint": fingerprint,
             "run_id": result.run_id,
+            "notice": HYPOTHETICAL_NOTICE,
         },
         "request": result.request.model_dump(mode="json"),
     }
@@ -50,6 +52,7 @@ def render_result_export(result: BacktestResult) -> str:
         "export_metadata": {
             "economic_fingerprint": fingerprint,
             "run_id": result.run_id,
+            "notice": HYPOTHETICAL_NOTICE,
         },
         "result": result.model_dump(mode="json"),
     }

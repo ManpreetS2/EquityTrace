@@ -27,6 +27,7 @@ from equitytrace.repositories.facts import FactsRepository
 from equitytrace.repositories.issuers import IssuersRepository
 from equitytrace.repositories.market import MarketRepository
 from equitytrace.repositories.securities import SecuritiesRepository
+from helpers.split_coverage import seed_verified_split_coverage
 
 
 def _settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
@@ -362,6 +363,14 @@ def test_market_cap_split_continuity_and_raw_only(tmp_path, monkeypatch) -> None
                 ),
             ]
         )
+        # Explicit verified no-split coverage for each shares→price gap in this fixture.
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument.instrument_id,
+            coverage_start=date(2023, 1, 1),
+            coverage_end=date(2023, 2, 10),
+            provider_symbol="AAA",
+        )
         svc = MarketCapService(conn)
         before = svc.get_market_cap("AAA", date(2023, 1, 10))
         after = svc.get_market_cap("AAA", date(2023, 2, 10))
@@ -396,6 +405,13 @@ def test_weekend_prior_day_and_staleness(tmp_path, monkeypatch) -> None:
                     fetched_at=datetime(2024, 1, 1, tzinfo=UTC),
                 )
             ]
+        )
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument.instrument_id,
+            coverage_start=date(2023, 1, 1),
+            coverage_end=date(2023, 1, 20),
+            provider_symbol="AAA",
         )
         svc = MarketCapService(conn)
         weekend = svc.get_market_cap("AAA", date(2023, 1, 8))  # Sunday
@@ -519,6 +535,13 @@ def test_later_knowledge_time_warning(tmp_path, monkeypatch) -> None:
                     fetched_at=datetime(2024, 1, 1, tzinfo=UTC),
                 )
             ]
+        )
+        seed_verified_split_coverage(
+            conn,
+            instrument_id=instrument.instrument_id,
+            coverage_start=date(2023, 1, 1),
+            coverage_end=date(2023, 1, 3),
+            provider_symbol="AAA",
         )
         result = MarketCapService(conn).get_market_cap(
             "AAA",
