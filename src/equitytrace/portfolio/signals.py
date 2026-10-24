@@ -11,7 +11,7 @@ from equitytrace.factors.ranking import rank_factor_results
 from equitytrace.factors.registry import get_factor, normalize_factor_name
 from equitytrace.financials.models import FinancialSnapshot
 from equitytrace.financials.service import FinancialsError, FinancialsService
-from equitytrace.portfolio.models import MIXED_PERIODS_WARNING, SignalSelection
+from equitytrace.portfolio.models import MIXED_PERIODS_WARNING, SignalSelection, TieAtCutoff
 
 
 def normalize_universe(tickers: tuple[str, ...] | list[str]) -> list[str]:
@@ -100,8 +100,29 @@ def select_exact_top_n(
     years = {row.result.period.fiscal_year for row in ranked}
     return SignalSelection(
         ranked=tuple(ranked),
+        tie_at_cutoff=_tie_at_cutoff(ranking.rows, top_n),
         mixed_fiscal_periods=len(years) > 1,
         evidence_available_at=evidence_available_at,
+    )
+
+
+def _tie_at_cutoff(rows: tuple[RankedFactorResult, ...], top_n: int) -> TieAtCutoff | None:
+    """Describe a tie that straddles the top-N cutoff (None when the cut is clean).
+
+    Rows within a tie are ordered by ticker ascending, so the names kept are the
+    alphabetically first of the tied group. That rule is deterministic but non-economic.
+    """
+    cutoff_rank = rows[top_n - 1].rank
+    if all(row.rank != cutoff_rank for row in rows[top_n:]):
+        return None
+    tied = [row for row in rows if row.rank == cutoff_rank]
+    selected = [row.result.ticker for row in rows[:top_n] if row.rank == cutoff_rank]
+    excluded = [row.result.ticker for row in rows[top_n:] if row.rank == cutoff_rank]
+    return TieAtCutoff(
+        factor_value=tied[0].result.value,
+        tied_tickers=tuple(row.result.ticker for row in tied),
+        selected_tickers=tuple(selected),
+        excluded_tickers=tuple(excluded),
     )
 
 

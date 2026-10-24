@@ -34,6 +34,7 @@ from equitytrace.portfolio.models import (
     ISSUER_IDENTITY_UNAVAILABLE,
     SAME_ISSUER_UNAVAILABLE,
     STANDING_WARNINGS,
+    TOP_N_TIE_WARNING,
     WEIGHT_TOLERANCE,
     BacktestRequest,
     BacktestResult,
@@ -46,6 +47,7 @@ from equitytrace.portfolio.models import (
     PortfolioState,
     RebalanceRecord,
     RebalanceStatus,
+    TieAtCutoff,
     WeightTransition,
 )
 from equitytrace.portfolio.returns import ReturnMatrix, aligned_return_matrix, session_return
@@ -353,6 +355,8 @@ class BacktestEngine:
                     nav_events.append(attempt.record.post_cost_nav)
                 rebalances.append(attempt.record)
                 mixed = mixed or attempt.selection_mixed
+                if attempt.tie_at_cutoff:
+                    _append_unique(warnings, TOP_N_TIE_WARNING)
 
             drawdown = state.nav / peak - 1.0
             equity.append(
@@ -487,7 +491,11 @@ class BacktestEngine:
             cost_amount=outcome.cost_amount,
             transitions=transitions,
         )
-        return _RebalanceAttempt(record=record, selection_mixed=mixed)
+        return _RebalanceAttempt(
+            record=record,
+            selection_mixed=mixed,
+            tie_at_cutoff=target.selection.tie_at_cutoff is not None,
+        )
 
     def _form_target(
         self,
@@ -661,6 +669,7 @@ class BacktestEngine:
 class _RebalanceAttempt:
     record: RebalanceRecord
     selection_mixed: bool = False
+    tie_at_cutoff: bool = False
 
 
 def request_lookback_days() -> int:
@@ -757,8 +766,8 @@ def _unavailable_rebalance(
     return _RebalanceAttempt(record=record, selection_mixed=mixed)
 
 
-def _signal_provenance_json(result: FactorResult) -> str:
-    payload = {
+def _signal_provenance_json(result: FactorResult, tie: TieAtCutoff | None = None) -> str:
+    payload: dict[str, object] = {
         "factor": result.factor,
         "ticker": result.ticker,
         "cik": result.cik,
@@ -773,6 +782,8 @@ def _signal_provenance_json(result: FactorResult) -> str:
             result.market_input.model_dump(mode="json") if result.market_input is not None else None
         ),
     }
+    if tie is not None:
+        payload[TOP_N_TIE_WARNING] = tie.model_dump(mode="json")
     return json.dumps(payload, sort_keys=True)
 
 
@@ -807,7 +818,7 @@ def _transition_rows(
             signal_value = ranked_row.result.value
             signal_rank = ranked_row.rank
             signal_period = ranked_row.result.period.label()
-            provenance = _signal_provenance_json(ranked_row.result)
+            provenance = _signal_provenance_json(ranked_row.result, target.selection.tie_at_cutoff)
         rows.append(
             WeightTransition(
                 symbol=symbol,
