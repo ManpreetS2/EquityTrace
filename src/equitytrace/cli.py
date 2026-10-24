@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -30,6 +30,7 @@ from equitytrace.repositories.ingestion import IngestionError, IngestionReposito
 from equitytrace.repositories.securities import SecuritiesRepository
 from equitytrace.sec.client import SecClient, SecClientError, SecHttpError
 from equitytrace.sec.tickers import resolve_ticker
+from equitytrace.timeutil import AS_OF_HELP, parse_as_of
 
 app = typer.Typer(
     name="equitytrace",
@@ -80,20 +81,6 @@ def _load_settings() -> Settings:
 def _user_error(message: str, code: int = 1) -> None:
     err_console.print(f"[bold red]Error:[/bold red] {message}")
     raise typer.Exit(code)
-
-
-def _parse_as_of(value: str) -> datetime:
-    text = value.strip()
-    try:
-        if "T" in text or " " in text:
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                return parsed.replace(tzinfo=UTC)
-            return parsed.astimezone(UTC)
-        day = date.fromisoformat(text)
-        return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=UTC)
-    except ValueError as exc:
-        raise ValueError(f"Invalid date '{value}'. Use YYYY-MM-DD or an ISO datetime.") from exc
 
 
 @app.callback()
@@ -304,7 +291,11 @@ def facts_as_of_cmd(
     ticker: Annotated[str, typer.Argument(help="Stock ticker symbol")],
     as_of_date: Annotated[
         str,
-        typer.Option("--date", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--date",
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ],
     concept: Annotated[
         str | None,
@@ -323,7 +314,7 @@ def facts_as_of_cmd(
         _user_error(f"Database not found at {path}. Run `equitytrace init-db` and ingest first.")
 
     try:
-        as_of = _parse_as_of(as_of_date)
+        as_of = parse_as_of(as_of_date)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -422,7 +413,10 @@ def statements_cmd(
     ],
     as_of_date: Annotated[
         str | None,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ] = None,
     database: Annotated[
         Path | None,
@@ -437,7 +431,7 @@ def statements_cmd(
 
     try:
         parsed_period = parse_period(period)
-        as_of = _parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
+        as_of = parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -462,7 +456,10 @@ def factor_cmd(
     ],
     as_of_date: Annotated[
         str | None,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ] = None,
     market_cap: Annotated[
         float | None,
@@ -487,7 +484,7 @@ def factor_cmd(
 
     try:
         parsed_period = parse_period(period)
-        as_of = _parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
+        as_of = parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -555,7 +552,10 @@ def factors_cmd(
     ],
     as_of_date: Annotated[
         str | None,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ] = None,
     market_cap: Annotated[
         float | None,
@@ -580,7 +580,7 @@ def factors_cmd(
 
     try:
         parsed_period = parse_period(period)
-        as_of = _parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
+        as_of = parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
     except ValueError as exc:
         _user_error(str(exc))
 
@@ -628,7 +628,10 @@ def rank_cmd(
     ],
     as_of_date: Annotated[
         str | None,
-        typer.Option("--as-of", help="Point-in-time date (YYYY-MM-DD or ISO datetime)"),
+        typer.Option(
+            "--as-of",
+            help=AS_OF_HELP,
+        ),
     ] = None,
     database: Annotated[
         Path | None,
@@ -647,7 +650,7 @@ def rank_cmd(
 
     try:
         parsed_period = parse_period(period)
-        as_of = _parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
+        as_of = parse_as_of(as_of_date) if as_of_date else datetime.now(UTC)
     except ValueError as exc:
         _user_error(str(exc))
 
