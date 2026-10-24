@@ -115,6 +115,11 @@ uv run equitytrace init-db
 Live SEC/market commands need configuration documented in
 [START_HERE.md](START_HERE.md). The offline demo does not.
 
+Run `equitytrace` from the repository root: `.env` and the default `data/` paths are
+resolved relative to the current directory, so another directory silently ignores
+`.env` and creates a new empty `data/`. Set `EQUITYTRACE_DATABASE_PATH` to an
+absolute path to avoid this.
+
 ## Testing and reproducibility
 
 ```bash

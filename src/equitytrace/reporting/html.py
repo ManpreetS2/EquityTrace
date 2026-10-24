@@ -31,6 +31,11 @@ _METHODOLOGY_LIMITATIONS = (
 )
 
 
+HYPOTHETICAL_NOTICE = (
+    "These are hypothetical, backtested research results, not actual trading performance."
+)
+
+
 def render_research_report(result: BacktestResult) -> str:
     """Build a deterministic standalone HTML document for one persisted run."""
     fingerprint = fingerprint_request(result.request)
@@ -222,6 +227,7 @@ def _section_performance(result: BacktestResult, *, success: bool) -> str:
         )
     return _section(
         "Performance summary",
+        f'<p class="hypothetical">{HYPOTHETICAL_NOTICE}</p>'
         "<p>Values below are exactly the persisted metrics for this run.</p>"
         + _metrics_table(result.metrics, result.final_nav),
     )

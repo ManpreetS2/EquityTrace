@@ -134,7 +134,7 @@ def test_persist_failure_during_facts_is_repairable_by_reingest(
     monkeypatch.setattr(FactsRepository, "upsert_many", exploding_upsert)
 
     with pytest.raises(RuntimeError, match="forced fact insert failure"):
-        repo._persist_atomic(
+        repo._persist_snapshot(
             issuer=issuer,
             securities=securities,
             filings=[],
@@ -147,7 +147,7 @@ def test_persist_failure_during_facts_is_repairable_by_reingest(
         assert FactsRepository(conn).count() == 0
 
     monkeypatch.setattr(FactsRepository, "upsert_many", original_upsert)
-    repo._persist_atomic(
+    repo._persist_snapshot(
         issuer=issuer,
         securities=securities,
         filings=[],

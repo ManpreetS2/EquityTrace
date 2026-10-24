@@ -339,6 +339,10 @@ def test_export_roundtrip_and_fingerprint(
     digest = fingerprint_request(loaded.request)
     assert request_payload["export_metadata"]["economic_fingerprint"] == digest
     assert result_payload["export_metadata"]["economic_fingerprint"] == digest
+    phrase = "hypothetical, backtested research results, not actual trading performance"
+    assert phrase in request_payload["export_metadata"]["notice"]
+    assert phrase in result_payload["export_metadata"]["notice"]
+    assert phrase in render_research_report(loaded)
     assert request_payload["request"]["factor"] == loaded.request.factor
     assert result_payload["result"]["run_id"] == loaded.run_id
     assert result_payload["result"]["status"] == loaded.status.value
