@@ -359,14 +359,17 @@ def component_total_debt(
     long_term: CanonicalValue | None,
 ) -> CanonicalValue | None:
     """Calculate total debt from components when direct tag is missing."""
-    if short_term is None and long_term is None:
-        return None
-    if (short_term is None or short_term.value is None) and (
-        long_term is None or long_term.value is None
+    # Missing facts are unknown, not evidence of zero debt. Partial totals can
+    # otherwise manufacture debt reductions and improve quality rankings.
+    if (
+        short_term is None
+        or short_term.value is None
+        or long_term is None
+        or long_term.value is None
     ):
         return None
-    st = short_term.value if short_term and short_term.value is not None else 0.0
-    lt = long_term.value if long_term and long_term.value is not None else 0.0
+    st = short_term.value
+    lt = long_term.value
     inputs: list[str] = []
     accessions: list[str] = []
     available: list[datetime] = []
@@ -430,9 +433,20 @@ def component_short_term_debt(
     if not eligible:
         return None
 
-    # Latest available fact per concept.
+    # Comparative rows can share fy/fp with the current balance. Select the
+    # latest balance date first, then the latest known revision of that date.
+    # Stable provenance keys make equal-time selection independent of input order.
     by_concept: dict[str, FinancialFact] = {}
-    for fact in sorted(eligible, key=lambda f: f.available_at, reverse=True):
+    for fact in sorted(
+        eligible,
+        key=lambda f: (
+            f.end_date or date.min,
+            f.available_at,
+            f.accession_number or "",
+            f.fact_id or "",
+        ),
+        reverse=True,
+    ):
         by_concept.setdefault(fact.concept, fact)
 
     borrowings = by_concept.get("ShortTermBorrowings") or by_concept.get("CommercialPaper")
