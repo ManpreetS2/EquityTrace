@@ -208,3 +208,117 @@ branch corrects those cases but does not certify the remaining risks above.
 Next action: review and incorporate the draft audit PR into `integration/v1.0-rc`,
 then reassess release readiness with the non-atomic-ingestion limitation explicit.
 No merge or publication is authorized by this report.
+
+## Final debt-consistency hardening on PR #34
+
+Starting/reviewed SHA: `1186d7a8bf58198533cf77037bb17659c425ccf4`.
+The local branch and remote PR head both matched it before work; the target
+remained `integration/v1.0-rc` at `f748fe8452400a532a7d2aae1b5c853ee9b017f5`.
+The worktree was clean. All six original audit files were reviewed; the original
+cash/nonfinite fixes remain intact. Additional edits are confined to debt
+selection/service, debt regression fixtures/tests and this report.
+
+### Reproduced failure
+
+An FY2023 filing carries ShortTermBorrowings 30 at 2023-12-31,
+LongTermDebtCurrent 5 at 2022-12-31, and LongTermDebtNoncurrent 40 at
+2023-12-31, without complete direct debt tags. The prior FY2022 direct total
+is 100. On the reviewed SHA the snapshot reports current debt **35**, total
+debt **75**, and a valid debt_change **-25**. Reversing ingestion order gives the
+same incorrect result. Omitting current LTD entirely instead reports 30, 70
+and -30; the missing borrowing case similarly publishes partial debt.
+
+The initial focused regressions ran against the functioning pre-fix sources:
+`uv run pytest tests/test_debt_consistency.py` produced **26 failed, 4 passed**.
+Eight failures show invented complete balances/downstream signals; sixteen show
+that valid derived total-debt provenance omitted its source date; two show that
+the total-debt helper accepted mismatched or unknown dates. The four valid
+complete direct-debt cases already passed. Five additional boundary/scope cases
+were then added, for 35 focused cases in the final file.
+
+### Correction and compatibility
+
+Current-debt fallback now requires both borrowing/commercial-paper and current
+LTD evidence on the same current balance date. The service anchors that date to
+the latest eligible selected balance-sheet evidence for the requested fiscal
+period; the helper independently infers it from mapped instant facts when called
+without an anchor. Availability cutoffs remain enforced. A missing component
+returns an explanatory unavailable CanonicalValue, which replaces the initially
+selected partial fallback. Matching prior comparative dates cannot replace a
+missing current balance when current balance evidence exists.
+
+Total-debt fallback requires the same known component balance date and a known
+noncurrent LTD scope (`LongTermDebtNoncurrent`). Ambiguous fallback concepts are
+not assumed to exclude current maturities. Derived total provenance now records
+the common period_end, input identities, accessions and maximum availability.
+Valid current-date direct DebtCurrent and direct total debt remain authoritative,
+including reported zeros; stale comparative direct values cannot bypass the
+guards. A strengthened direct-debt regression also makes the partial borrowing
+row available one day later than the complete DebtCurrent. It initially exposed
+two preservation failures (zero and 37), so the service now explicitly selects
+complete current-date DebtCurrent before attempting component fallback. Missing debt propagates to an invalid/unavailable debt_change factor,
+with current input None and prior input 100 in the reproduced case.
+
+The existing synthetic ALPHA fixture had relied on omitted current-maturity tags
+as zero. It now explicitly reports zero current maturities for its two annual
+balances, preserving its intended complete annual totals and factor results.
+The older independent unit cases now provide explicit zero/date provenance as
+well. No assertions were relaxed to accept partial debt; missing-evidence cases
+remain separately tested as unavailable. No concept mappings, dependencies,
+schemas, security files or release references changed.
+
+### Final local verification
+
+```text
+uv lock --check
+  PASS: 58 packages resolved; lockfile unchanged.
+uv sync --all-groups --no-editable --locked
+  PASS: locked environment synchronized and package installed non-editably.
+uv run ruff check .
+  PASS.
+uv run ruff format --check .
+  PASS: 133 files already formatted.
+uv run mypy src
+  PASS: no issues found in 73 source files.
+git diff --check
+  PASS.
+uv run pytest tests/test_debt_consistency.py tests/test_independent_correctness.py tests/test_independent_numeric.py
+  PASS: 46 passed in 4.24s (35 new consistency cases plus 11 original audit cases).
+EQUITYTRACE_MARKET_DATA_REQUESTS_PER_MINUTE=600000 uv run pytest
+  PASS: 694 passed in 110.04s (0:01:50), no exclusions.
+uv run --no-project python scripts/package_smoke.py
+  PASS: wheel/sdist build, isolated installs and package/CLI smoke; package-smoke ok.
+```
+
+The full suite uses the same mock-only request-budget override as the initial
+audit; production defaults and CI remain unchanged. There are no test exclusions
+and no live SEC/Twelve Data calls. The exact existing CI determinism selection
+was extracted without editing the workflow and run with this command:
+
+```python
+import os, shlex, subprocess
+from pathlib import Path
+
+selection = shlex.split(Path(".github/workflows/ci.yml").read_text().split("run: >\n")[-1])
+for seed in ("0", "1", "42"):
+    command = ["uv", "run", "pytest", *selection[3:]]
+    env = dict(os.environ, PYTHONHASHSEED=seed, EQUITYTRACE_SEC_EMAIL="ci@example.com")
+    subprocess.run(command, env=env, check=True)
+```
+
+Seed 0: **18 passed in 12.13s**. Seed 1: **18 passed in 14.85s**.
+Seed 42: **18 passed in 13.51s**. Final GitHub CI must also pass all five jobs
+on the exact pushed correction SHA; its run and conclusions are recorded in the
+final review handoff, without another documentation-only push invalidating that SHA.
+
+### Remaining financial risks
+
+The earlier current-debt-completeness/ambiguous-scope concern is now handled by
+returning unavailable rather than assuming zero or noncurrent scope. This can
+reduce factor coverage for issuers lacking sufficient XBRL evidence; it is an
+intentional compatibility change. Identical fy/fp metadata alone still cannot
+prove the actual current balance date when no later balance evidence exists.
+Issuer-specific classifications require source evidence, not expanded mappings.
+Previously persisted derived results are not rewritten; recompute research runs
+after applying this correction. Non-atomic ingestion, provider-vintage limits,
+survivorship bias and live-provider completeness remain as described above.

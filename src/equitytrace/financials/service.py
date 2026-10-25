@@ -101,6 +101,28 @@ class FinancialsService:
                 resolved["gross_profit"] = gp
                 warnings.extend(gp.warnings)
 
+        # Anchor fallbacks to the latest balance date evidenced in this period.
+        # fy/fp alone can also label prior-period comparative balances.
+        balance_date = max(
+            (
+                v.provenance.period_end
+                for name, v in resolved.items()
+                if name in BALANCE_CONCEPTS
+                and v.value is not None
+                and v.provenance.period_end is not None
+            ),
+            default=None,
+        )
+        # A later partial tag must not displace a known complete DebtCurrent.
+        complete_short = select_canonical_value(
+            concept="short_term_debt",
+            period=parsed,
+            facts=[f for f in facts if f.concept == "DebtCurrent" and f.end_date == balance_date],
+            as_of=as_of_utc,
+        ).value
+        if complete_short.value is not None:
+            resolved["short_term_debt"] = complete_short
+            warnings.extend(complete_short.warnings)
         short = resolved.get("short_term_debt")
         selected_short_concept = (
             short.provenance.source_concept
@@ -108,7 +130,10 @@ class FinancialsService:
             else None
         )
         needs_component_short = (
-            short is None or short.value is None or selected_short_concept != "DebtCurrent"
+            short is None
+            or short.value is None
+            or selected_short_concept != "DebtCurrent"
+            or short.provenance.period_end != balance_date
         )
         if needs_component_short:
             # DebtCurrent is a complete current-debt total. Otherwise sum
@@ -117,11 +142,24 @@ class FinancialsService:
                 facts=facts,
                 period=parsed,
                 as_of=as_of_utc,
+                balance_date=balance_date,
             )
-            if std is not None:
-                resolved["short_term_debt"] = std
-                warnings.extend(std.warnings)
+            resolved["short_term_debt"] = std
+            warnings.extend(std.warnings)
 
+        total = resolved.get("total_debt")
+        if (
+            total is not None
+            and total.value is not None
+            and total.provenance.period_end != balance_date
+        ):
+            resolved["total_debt"] = CanonicalValue(
+                concept="total_debt",
+                value=None,
+                unit="USD",
+                missing_reason="Direct total debt does not match the current balance date",
+                warnings=("debt_period_mismatch", "missing_value"),
+            )
         if resolved.get("total_debt") is None or resolved["total_debt"].value is None:
             td = component_total_debt(
                 short_term=resolved.get("short_term_debt"),

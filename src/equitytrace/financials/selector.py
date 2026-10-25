@@ -368,6 +368,23 @@ def component_total_debt(
         or long_term.value is None
     ):
         return None
+    balance_date = short_term.provenance.period_end
+    if balance_date is None or long_term.provenance.period_end != balance_date:
+        return CanonicalValue(
+            concept="total_debt",
+            value=None,
+            unit="USD",
+            missing_reason="Debt components require the same known balance date",
+            warnings=("debt_period_mismatch", "missing_value"),
+        )
+    if long_term.provenance.source_concept != "LongTermDebtNoncurrent":
+        return CanonicalValue(
+            concept="total_debt",
+            value=None,
+            unit="USD",
+            missing_reason="Cannot establish noncurrent scope of long-term debt for summation",
+            warnings=("debt_scope_ambiguous", "missing_value"),
+        )
     st = short_term.value
     lt = long_term.value
     inputs: list[str] = []
@@ -397,6 +414,7 @@ def component_total_debt(
             accession_number=accessions[0] if accessions else None,
             available_at=max(available) if available else None,
             unit="USD",
+            period_end=balance_date,
         ),
         warnings=("derived_from_components",),
     )
@@ -407,11 +425,14 @@ def component_short_term_debt(
     facts: list[FinancialFact],
     period: FinancialPeriod,
     as_of: datetime,
-) -> CanonicalValue | None:
+    balance_date: date | None = None,
+) -> CanonicalValue:
     """
     Sum non-overlapping short-term debt components when DebtCurrent is absent.
 
     Uses ShortTermBorrowings (or CommercialPaper) + LongTermDebtCurrent.
+    Both components must be reported on the requested balance date, including
+    explicit zeros. An unavailable value replaces any partial canonical fallback.
     Does not sum CommercialPaper on top of ShortTermBorrowings.
     """
     from equitytrace.financials.periods import period_matches_fact as _match
@@ -430,8 +451,27 @@ def component_short_term_debt(
         }
         and (f.start_date is None or f.start_date == f.end_date)
     ]
-    if not eligible:
-        return None
+    if balance_date is None:
+        instant_concepts = {
+            concept
+            for mapping in CANONICAL_MAPPINGS.values()
+            if mapping.period_type is PeriodType.INSTANT
+            for concept in mapping.candidates
+        }
+        balance_date = max(
+            (
+                f.end_date
+                for f in facts
+                if f.available_at <= as_of
+                and f.end_date is not None
+                and _match(period, f.fiscal_year, f.fiscal_period)
+                and f.unit.strip().lower() == "usd"
+                and f.concept in instant_concepts
+                and (f.start_date is None or f.start_date == f.end_date)
+            ),
+            default=None,
+        )
+    eligible = [f for f in eligible if f.end_date is not None and f.end_date == balance_date]
 
     # Comparative rows can share fy/fp with the current balance. Select the
     # latest balance date first, then the latest known revision of that date.
@@ -451,8 +491,17 @@ def component_short_term_debt(
 
     borrowings = by_concept.get("ShortTermBorrowings") or by_concept.get("CommercialPaper")
     current_ltd = by_concept.get("LongTermDebtCurrent")
-    if borrowings is None and current_ltd is None:
-        return None
+    if borrowings is None or current_ltd is None:
+        return CanonicalValue(
+            concept="short_term_debt",
+            value=None,
+            unit="USD",
+            missing_reason=(
+                "Requires reported borrowings (or commercial paper) and current LTD "
+                "on the current balance date; missing components are not zero"
+            ),
+            warnings=("incomplete_current_debt", "missing_value"),
+        )
 
     total = 0.0
     inputs: list[str] = []

@@ -7,7 +7,7 @@ import pytest
 
 from equitytrace.database import Database
 from equitytrace.financials.derived import compute_derived_values
-from equitytrace.financials.models import CanonicalValue
+from equitytrace.financials.models import CanonicalValue, ValueProvenance
 from equitytrace.financials.service import FinancialsService
 from helpers.financial_fixtures import dt, make_fact, seed_company
 
@@ -83,9 +83,14 @@ def test_component_selection_is_independent_of_fact_order() -> None:
         )
         for value, end in [(10, date(2022, 12, 31)), (30, date(2023, 12, 31))]
     ]
+    current_zero = (
+        facts[1]
+        .model_copy(update={"concept": "LongTermDebtCurrent", "value": 0.0, "fact_id": None})
+        .with_fact_id()
+    )
     for ordered in permutations(facts):
         result = component_short_term_debt(
-            facts=list(ordered),
+            facts=[*ordered, current_zero],
             period=FinancialPeriod(fiscal_year=2023, fiscal_period="FY", kind="annual"),
             as_of=dt(2024, 3, 1),
         )
@@ -97,7 +102,10 @@ def test_component_selection_is_independent_of_fact_order() -> None:
 def test_total_debt_does_not_invent_a_missing_component(missing_side: str) -> None:
     from equitytrace.financials.selector import component_total_debt
 
-    known = CanonicalValue(concept="debt", value=100, unit="USD")
+    provenance = ValueProvenance(
+        period_end=date(2023, 12, 31), source_concept="LongTermDebtNoncurrent"
+    )
+    known = CanonicalValue(concept="debt", value=100, unit="USD", provenance=provenance)
     missing = CanonicalValue(concept="debt", value=None, unit="USD")
     result = component_total_debt(
         short_term=missing if missing_side == "short" else known,
@@ -105,7 +113,7 @@ def test_total_debt_does_not_invent_a_missing_component(missing_side: str) -> No
     )
     assert result is None
     # Explicit zero allows a complete sum.
-    zero = CanonicalValue(concept="debt", value=0, unit="USD")
+    zero = CanonicalValue(concept="debt", value=0, unit="USD", provenance=provenance)
     complete = component_total_debt(short_term=zero, long_term=known)
     assert complete is not None
     assert complete.value == 100

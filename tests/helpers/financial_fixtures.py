@@ -530,6 +530,15 @@ def alpha_facts() -> list[FinancialFact]:
             ),
         ]
     )
+    # This fictional issuer explicitly reports no current LTD maturities.
+    # Missing XBRL evidence must not stand in for these reported zero balances.
+    facts.extend(
+        fact.model_copy(
+            update={"concept": "LongTermDebtCurrent", "value": 0.0, "fact_id": None}
+        ).with_fact_id()
+        for fact in list(facts)
+        if fact.concept == "ShortTermBorrowings"
+    )
     return facts
 
 
