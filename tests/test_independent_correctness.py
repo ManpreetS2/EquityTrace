@@ -125,3 +125,29 @@ def test_hand_calculated_drift_and_costs() -> None:
     assert switch.gross_turnover == pytest.approx(8 / 7)
     assert switch.cost_amount == pytest.approx(11.88)
     assert state.nav == pytest.approx(1027.62)
+
+
+def test_missing_debt_component_cannot_create_a_deleveraging_signal(db: Database) -> None:
+    from equitytrace.factors.engine import FactorEngine
+    from helpers.financial_fixtures import alpha_facts
+
+    facts = [
+        fact
+        for fact in alpha_facts()
+        if not (fact.fiscal_year == 2023 and fact.concept == "LongTermDebtNoncurrent")
+    ]
+    with db.session() as conn:
+        seed_company(
+            conn,
+            ticker="ALPHA",
+            cik="0001000001",
+            legal_name="Missing debt case",
+            facts=facts,
+        )
+        result = FactorEngine(conn).calculate(
+            "ALPHA", "debt_change", "FY2023", as_of=dt(2024, 3, 1), persist=False
+        )
+    assert not result.valid
+    assert result.value is None
+    assert result.inputs["total_debt"] is None
+    assert result.inputs["prior_total_debt"] == 50
