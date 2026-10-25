@@ -100,7 +100,7 @@ class FinancialFact(BaseModel):
     label: str | None = None
     description: str | None = None
     unit: str
-    value: float
+    value: float = Field(allow_inf_nan=False)
     start_date: date | None = None
     end_date: date | None = None
     filing_date: date | None = None

@@ -359,14 +359,34 @@ def component_total_debt(
     long_term: CanonicalValue | None,
 ) -> CanonicalValue | None:
     """Calculate total debt from components when direct tag is missing."""
-    if short_term is None and long_term is None:
-        return None
-    if (short_term is None or short_term.value is None) and (
-        long_term is None or long_term.value is None
+    # Missing facts are unknown, not evidence of zero debt. Partial totals can
+    # otherwise manufacture debt reductions and improve quality rankings.
+    if (
+        short_term is None
+        or short_term.value is None
+        or long_term is None
+        or long_term.value is None
     ):
         return None
-    st = short_term.value if short_term and short_term.value is not None else 0.0
-    lt = long_term.value if long_term and long_term.value is not None else 0.0
+    balance_date = short_term.provenance.period_end
+    if balance_date is None or long_term.provenance.period_end != balance_date:
+        return CanonicalValue(
+            concept="total_debt",
+            value=None,
+            unit="USD",
+            missing_reason="Debt components require the same known balance date",
+            warnings=("debt_period_mismatch", "missing_value"),
+        )
+    if long_term.provenance.source_concept != "LongTermDebtNoncurrent":
+        return CanonicalValue(
+            concept="total_debt",
+            value=None,
+            unit="USD",
+            missing_reason="Cannot establish noncurrent scope of long-term debt for summation",
+            warnings=("debt_scope_ambiguous", "missing_value"),
+        )
+    st = short_term.value
+    lt = long_term.value
     inputs: list[str] = []
     accessions: list[str] = []
     available: list[datetime] = []
@@ -394,6 +414,7 @@ def component_total_debt(
             accession_number=accessions[0] if accessions else None,
             available_at=max(available) if available else None,
             unit="USD",
+            period_end=balance_date,
         ),
         warnings=("derived_from_components",),
     )
@@ -404,11 +425,14 @@ def component_short_term_debt(
     facts: list[FinancialFact],
     period: FinancialPeriod,
     as_of: datetime,
-) -> CanonicalValue | None:
+    balance_date: date | None = None,
+) -> CanonicalValue:
     """
     Sum non-overlapping short-term debt components when DebtCurrent is absent.
 
     Uses ShortTermBorrowings (or CommercialPaper) + LongTermDebtCurrent.
+    Both components must be reported on the requested balance date, including
+    explicit zeros. An unavailable value replaces any partial canonical fallback.
     Does not sum CommercialPaper on top of ShortTermBorrowings.
     """
     from equitytrace.financials.periods import period_matches_fact as _match
@@ -427,18 +451,57 @@ def component_short_term_debt(
         }
         and (f.start_date is None or f.start_date == f.end_date)
     ]
-    if not eligible:
-        return None
+    if balance_date is None:
+        instant_concepts = {
+            concept
+            for mapping in CANONICAL_MAPPINGS.values()
+            if mapping.period_type is PeriodType.INSTANT
+            for concept in mapping.candidates
+        }
+        balance_date = max(
+            (
+                f.end_date
+                for f in facts
+                if f.available_at <= as_of
+                and f.end_date is not None
+                and _match(period, f.fiscal_year, f.fiscal_period)
+                and f.unit.strip().lower() == "usd"
+                and f.concept in instant_concepts
+                and (f.start_date is None or f.start_date == f.end_date)
+            ),
+            default=None,
+        )
+    eligible = [f for f in eligible if f.end_date is not None and f.end_date == balance_date]
 
-    # Latest available fact per concept.
+    # Comparative rows can share fy/fp with the current balance. Select the
+    # latest balance date first, then the latest known revision of that date.
+    # Stable provenance keys make equal-time selection independent of input order.
     by_concept: dict[str, FinancialFact] = {}
-    for fact in sorted(eligible, key=lambda f: f.available_at, reverse=True):
+    for fact in sorted(
+        eligible,
+        key=lambda f: (
+            f.end_date or date.min,
+            f.available_at,
+            f.accession_number or "",
+            f.fact_id or "",
+        ),
+        reverse=True,
+    ):
         by_concept.setdefault(fact.concept, fact)
 
     borrowings = by_concept.get("ShortTermBorrowings") or by_concept.get("CommercialPaper")
     current_ltd = by_concept.get("LongTermDebtCurrent")
-    if borrowings is None and current_ltd is None:
-        return None
+    if borrowings is None or current_ltd is None:
+        return CanonicalValue(
+            concept="short_term_debt",
+            value=None,
+            unit="USD",
+            missing_reason=(
+                "Requires reported borrowings (or commercial paper) and current LTD "
+                "on the current balance date; missing components are not zero"
+            ),
+            warnings=("incomplete_current_debt", "missing_value"),
+        )
 
     total = 0.0
     inputs: list[str] = []

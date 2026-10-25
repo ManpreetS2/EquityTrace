@@ -157,7 +157,13 @@ def compute_derived_values(
     sti = resolved.get("short_term_investments")
     debt = resolved.get("total_debt")
     cash_total = _sum_optional(cash, sti)
-    if debt and debt.value is not None and cash_total is not None:
+    if (
+        debt
+        and debt.value is not None
+        and cash
+        and cash.value is not None
+        and cash_total is not None
+    ):
         out["net_debt"] = CanonicalValue(
             concept="net_debt",
             value=debt.value - cash_total,
