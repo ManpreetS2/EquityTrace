@@ -65,6 +65,10 @@ def validate_payloads(submissions: dict[str, Any], company_facts: dict[str, Any]
                         raise ValueError("Invalid/nonfinite financial fact")
                     for key in ("end", "filed"):
                         date.fromisoformat(value[key])
+                    # A malformed reported duration must not silently become an
+                    # instant fact when normalization cannot parse its start.
+                    if value.get("start") is not None:
+                        date.fromisoformat(value["start"])
     if not observations:
         raise ValueError("Empty Company Facts observations")
     # A bounded traversal adds no full-payload JSON copy. Fetching already parsed
