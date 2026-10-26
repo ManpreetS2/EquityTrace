@@ -116,13 +116,14 @@ def main() -> None:
         def __init__(self, conn):
             self.conn = conn
 
-        def executemany(self, sql, rows):
+        def execute(self, sql, params=None):
             nonlocal batch_count
-            result = self.conn.executemany(sql, rows)
-            batch_count += 1
-            sample(self.conn)
-            if force_rollback and batch_count == max(1, args.facts // 4000):
-                raise RuntimeError("qualification rollback between batches")
+            result = self.conn.execute(sql, params)
+            if sql.startswith("INSERT INTO financial_facts"):
+                batch_count += 1
+                sample(self.conn)
+                if force_rollback and batch_count == max(1, args.facts // 4000):
+                    raise RuntimeError("qualification rollback between batches")
             return result
 
         def __getattr__(self, name):

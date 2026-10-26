@@ -139,4 +139,3 @@ Stopping the memory benchmark was an operational stop at a failed gate, not a re
 The **memory gate failed**, and the broader local/CI/recovery gates remain incomplete. A normal 25,000-fact transaction already exceeded the target by roughly 7.82 times on this host. A passing targeted suite cannot override this result.
 
 **Next action:** independently review the preserved memory failure and uncommitted Option A implementation before authorizing further persistence changes. Do not push a draft PR, change engine settings/dependencies, switch architectures, or execute the crash harness on the strength of this run.
-

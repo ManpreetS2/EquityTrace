@@ -172,11 +172,12 @@ def test_between_fact_batches_rollback(db, sec_client, published, monkeypatch):
         def __init__(self, conn):
             self.conn = conn
 
-        def executemany(self, sql, rows):
-            batches.append(len(rows))
-            if len(batches) == 2:
-                raise RuntimeError("between fact batches")
-            return self.conn.executemany(sql, rows)
+        def execute(self, sql, params=None):
+            if sql.startswith("INSERT INTO financial_facts"):
+                batches.append(len(params[0]))
+                if len(batches) == 2:
+                    raise RuntimeError("between fact batches")
+            return self.conn.execute(sql, params)
 
         def __getattr__(self, name):
             return getattr(self.conn, name)

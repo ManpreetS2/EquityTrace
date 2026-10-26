@@ -9,6 +9,50 @@ import duckdb
 
 from equitytrace.models import FinancialFact, compute_fact_id
 
+# Keep this positional mapping identical to the persisted row below and the schema.
+_FACT_COLUMN_TYPES = (
+    ("fact_id", "VARCHAR"),
+    ("cik", "VARCHAR"),
+    ("taxonomy", "VARCHAR"),
+    ("concept", "VARCHAR"),
+    ("label", "VARCHAR"),
+    ("description", "VARCHAR"),
+    ("unit", "VARCHAR"),
+    ("value", "DOUBLE"),
+    ("start_date", "DATE"),
+    ("end_date", "DATE"),
+    ("filing_date", "DATE"),
+    ("acceptance_datetime", "TIMESTAMPTZ"),
+    ("available_at", "TIMESTAMPTZ"),
+    ("accession_number", "VARCHAR"),
+    ("form", "VARCHAR"),
+    ("fiscal_year", "INTEGER"),
+    ("fiscal_period", "VARCHAR"),
+    ("frame", "VARCHAR"),
+    ("source_url", "VARCHAR"),
+    ("created_at", "TIMESTAMPTZ"),
+    ("updated_at", "TIMESTAMPTZ"),
+)
+_BATCH_INSERT_SQL = (
+    "INSERT INTO financial_facts ("
+    + ", ".join(name for name, _ in _FACT_COLUMN_TYPES)
+    + ") SELECT "
+    + ", ".join(f"UNNEST(CAST(? AS {sql_type}[]))" for _, sql_type in _FACT_COLUMN_TYPES)
+)
+
+
+def _insert_fact_columns(conn: duckdb.DuckDBPyConnection, columns: list[list[object]]) -> None:
+    """Insert one bounded batch; unequal lists must never be padded with NULLs."""
+    if len(columns) != len(_FACT_COLUMN_TYPES) or any(
+        not isinstance(column, list) for column in columns
+    ):
+        raise ValueError("Fact batch requires exactly 21 column arrays")
+    size = len(columns[0])
+    if size > 2000 or any(len(column) != size for column in columns):
+        raise ValueError("Fact column arrays must have equal lengths of at most 2000")
+    if size:
+        conn.execute(_BATCH_INSERT_SQL, columns)
+
 
 class FactsRepository:
     """Read/write access to financial facts with point-in-time filtering."""
@@ -56,10 +100,9 @@ class FactsRepository:
             """
         )
 
-        sql = upsert_sql
-        if len(ciks) == 1:
+        replace_issuer = len(ciks) == 1
+        if replace_issuer:
             self._conn.execute("DELETE FROM financial_facts WHERE cik = ?", [next(iter(ciks))])
-            sql = insert_sql
         for batch in batched(facts, 2000):
             rows: list[list[object]] = []
             for fact in batch:
@@ -89,7 +132,13 @@ class FactsRepository:
                         now,
                     ]
                 )
-            self._conn.executemany(sql, rows)
+            if replace_issuer:
+                # Only batch-sized references are transposed; no whole-payload copy.
+                _insert_fact_columns(
+                    self._conn, [list(column) for column in zip(*rows, strict=True)]
+                )
+            else:
+                self._conn.executemany(upsert_sql, rows)
 
     def search(
         self,
