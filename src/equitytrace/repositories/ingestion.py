@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock, RLock
@@ -286,36 +289,70 @@ class IngestionRepository:
                 raise ValueError("Incomplete replacement: stored fact history is missing")
 
     def reconcile_run(self, run_id: str) -> str:
-        """Inspect a closed writer's run; never demote an acknowledged success.
-
-        Call only after our writer scope closes, under the same in-process lock.
-        An inspectable running row has no committed publication because success
-        and the data would have committed together.
-        """
-        with _writer_lock(self._database.path), self._database.session() as conn:
-            conn.execute(
-                """UPDATE ingestion_runs SET status = 'failed', finished_at = ?,
-                          error_message = 'Interrupted before successful publication'
-                   WHERE run_id = ? AND status = 'running'""",
-                [datetime.now(UTC), run_id],
-            )
-            row = conn.execute(
-                "SELECT status FROM ingestion_runs WHERE run_id = ?", [run_id]
-            ).fetchone()
-            return str(row[0]) if row else "missing"
+        """Reconcile a closed writer using independent views, never one status lookup."""
+        with self._reconciliation_transaction() as conn:
+            return self._reconcile_on_connection(conn, run_id)
 
     def reconcile_interrupted_runs(self) -> None:
-        """Recover stale running bookkeeping under exclusive ingestion ownership.
+        """Reconcile deterministically; any contradiction rolls back the entire batch."""
+        with self._reconciliation_transaction() as conn:
+            # No WHERE: enumerate through an independent bounded table scan.
+            # Status changes do not change this ordering or its offsets.
+            offset = 0
+            while rows := conn.execute(
+                "SELECT * FROM ingestion_runs ORDER BY run_id LIMIT 500 OFFSET ?", [offset]
+            ).fetchmany(500):
+                for row in rows:
+                    if row[5] == "running":
+                        self._reconcile_on_connection(conn, str(row[0]))
+                offset += len(rows)
 
-        This does not inspect, certify or repair historical financial data.
-        """
-        with _writer_lock(self._database.path), self._database.session() as conn:
-            conn.execute(
-                """UPDATE ingestion_runs SET status = 'failed', finished_at = ?,
-                          error_message = 'Interrupted before successful publication'
-                   WHERE status = 'running'""",
-                [datetime.now(UTC)],
-            )
+    @contextmanager
+    def _reconciliation_transaction(self) -> Iterator[duckdb.DuckDBPyConnection]:
+        # A fresh connection is owned here; never BEGIN on a caller's connection.
+        try:
+            with _writer_lock(self._database.path), self._database.session() as conn:
+                conn.execute("BEGIN TRANSACTION")
+                try:
+                    yield conn
+                    conn.execute("COMMIT")
+                except BaseException as exc:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception as rollback_error:
+                        exc.add_note(f"Reconciliation rollback also failed: {rollback_error}")
+                    raise
+        except Exception as exc:
+            if isinstance(exc, IngestionOutcomeUnknown):
+                raise
+            raise IngestionOutcomeUnknown("Run reconciliation could not establish outcome") from exc
+
+    def _reconcile_on_connection(self, conn: duckdb.DuckDBPyConnection, run_id: str) -> str:
+        before = _consistent_run(conn, run_id)
+        _check_publication_views(conn, before)
+        status = str(before[5])
+        if status not in {"running", "success", "failed"}:
+            raise IngestionOutcomeUnknown(f"Invalid status for run {run_id}")
+        if status == "failed" and (before[4] is None or any(before[6:10])):
+            raise IngestionOutcomeUnknown(f"Ambiguous failed record {run_id}")
+        if status != "running":
+            return status
+        if before[4] is not None or any(before[6:10]) or before[10] is not None:
+            raise IngestionOutcomeUnknown(f"Ambiguous running record {run_id}")
+        finished_at = datetime.now(UTC)
+        message = "Interrupted before successful publication"
+        changed = conn.execute(
+            """UPDATE ingestion_runs SET status='failed', finished_at=?, error_message=?
+               WHERE run_id=? AND status='running' RETURNING run_id""",
+            [finished_at, message, run_id],
+        ).fetchmany(2)
+        if changed != [(run_id,)]:
+            raise IngestionOutcomeUnknown(f"Unverified interrupted transition for {run_id}")
+        expected = list(before)
+        expected[4], expected[5], expected[10] = finished_at, "failed", message
+        if _consistent_run(conn, run_id) != tuple(expected):
+            raise IngestionOutcomeUnknown(f"Interrupted transition disagrees for {run_id}")
+        return "failed"
 
     def _record_run_start(
         self,
@@ -397,6 +434,86 @@ class IngestionRepository:
         ).fetchone()
         if status == "success" and changed is None:
             raise ValueError("Publication requires its own running ingestion record")
+
+
+def _consistent_run(conn: duckdb.DuckDBPyConnection, run_id: str) -> tuple[Any, ...]:
+    """Compare every persisted field, including bookkeeping/persistence timestamps."""
+    selected = conn.execute("SELECT * FROM ingestion_runs WHERE run_id = ?", [run_id]).fetchmany(2)
+    scanned = []
+    cursor = conn.execute("SELECT * FROM ingestion_runs ORDER BY run_id")
+    while rows := cursor.fetchmany(500):
+        for row in rows:
+            if row[0] == run_id:
+                scanned.append(row)
+    if len(scanned) != 1 or selected != scanned:
+        raise IngestionOutcomeUnknown(f"Run views disagree or record is missing: {run_id}")
+    return tuple(scanned[0])
+
+
+def _view_digest(
+    conn: duckdb.DuckDBPyConnection,
+    sql: str,
+    params: list[str],
+    include: Callable[[tuple[Any, ...]], bool],
+) -> tuple[int, bytes]:
+    cursor = conn.execute(sql, params)
+    digest = hashlib.sha256()
+    count = 0
+    while rows := cursor.fetchmany(500):
+        for row in rows:
+            if include(row):
+                # Both views use the same connection/types/timezone. repr retains
+                # nulls, exact floats, dates, strings and all provenance fields.
+                encoded = repr(row).encode("utf-8")
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+                count += 1
+    return count, digest.digest()
+
+
+def _check_publication_views(conn: duckdb.DuckDBPyConnection, run: tuple[Any, ...]) -> None:
+    cik = str(run[2])
+    counts = []
+    for table, key, cik_column in (
+        ("issuers", "cik", 0),
+        ("securities", "ticker, cik", 1),
+        ("filings", "accession_number", 1),
+        ("financial_facts", "fact_id", 1),
+    ):
+
+        def matches_cik(row: tuple[Any, ...], position: int = cik_column) -> bool:
+            return bool(row[position] == cik)
+
+        selective = _view_digest(
+            conn, f"SELECT * FROM {table} WHERE cik = ? ORDER BY {key}", [cik], lambda _: True
+        )
+        scanned = _view_digest(
+            conn,
+            f"SELECT * FROM {table} ORDER BY {key}",
+            [],
+            matches_cik,
+        )
+        if selective != scanned:
+            raise IngestionOutcomeUnknown(f"Publication views disagree: {table}, run {run[0]}")
+        counts.append(scanned[0])
+    if run[5] != "success":
+        return
+    if run[4] is None or run[10] is not None or any(value < 0 for value in run[6:10]):
+        raise IngestionOutcomeUnknown(f"Invalid success record {run[0]}")
+    # This schema retains run history but only the latest issuer snapshot. Never
+    # certify a superseded success using a later snapshot's counts.
+    superseded = False
+    cursor = conn.execute("SELECT * FROM ingestion_runs ORDER BY run_id")
+    while rows := cursor.fetchmany(500):
+        for other in rows:
+            if other[2] == cik and other[5] == "success" and other[0] != run[0]:
+                if other[4] is None or other[4] == run[4]:
+                    raise IngestionOutcomeUnknown(f"Ambiguous publication order for {run[0]}")
+                superseded |= other[4] > run[4]
+    if superseded:
+        raise IngestionOutcomeUnknown(f"Publication {run[0]} is superseded; snapshot unavailable")
+    if tuple(counts) != run[6:10] or counts[0] != 1 or not all(counts):
+        raise IngestionOutcomeUnknown(f"Publication counts disagree for run {run[0]}")
 
 
 def save_company_snapshot(
