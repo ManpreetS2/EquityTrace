@@ -19,6 +19,7 @@ from equitytrace.market.market_cap import MarketCapService
 from equitytrace.market.models import MarketCapResult
 from equitytrace.repositories.factors import FactorRepository
 from equitytrace.sec.normalization import EASTERN
+from equitytrace.transactions import consistent_read
 
 # Canonical statements are USD. A foreign-currency cap is not a usable multiple.
 _CANONICAL_CURRENCY = "USD"
@@ -43,6 +44,7 @@ class FactorEngine:
     def financials(self) -> FinancialsService:
         return self._service
 
+    @consistent_read
     def calculate(
         self,
         ticker: str,
@@ -87,6 +89,7 @@ class FactorEngine:
             self._repo.upsert_value(run_id=run_id, result=result)
         return result
 
+    @consistent_read
     def calculate_all(
         self,
         ticker: str,
@@ -109,6 +112,7 @@ class FactorEngine:
             for name in list_factors()
         ]
 
+    @consistent_read
     def rank(
         self,
         tickers: list[str],

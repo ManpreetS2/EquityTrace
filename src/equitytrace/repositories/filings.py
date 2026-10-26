@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from itertools import batched
 
 import duckdb
 
@@ -20,27 +21,7 @@ class FilingsRepository:
         if not filings:
             return
         now = datetime.now(UTC)
-        rows: list[list[object]] = [
-            [
-                filing.accession_number,
-                filing.cik,
-                filing.form,
-                filing.filing_date,
-                filing.report_date,
-                filing.acceptance_datetime,
-                filing.available_at,
-                filing.primary_document,
-                filing.file_number,
-                filing.film_number,
-                filing.is_xbrl,
-                filing.is_inline_xbrl,
-                filing.source_url,
-                now,
-                now,
-            ]
-            for filing in filings
-        ]
-        ciks = {str(row[1]) for row in rows}
+        ciks = {filing.cik for filing in filings}
         insert_sql = """
             INSERT INTO filings (
                 accession_number, cik, form, filing_date, report_date,
@@ -49,14 +30,6 @@ class FilingsRepository:
                 source_url, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
-        chunk_size = 500
-        if len(ciks) == 1:
-            cik = next(iter(ciks))
-            self._conn.execute("DELETE FROM filings WHERE cik = ?", [cik])
-            for start in range(0, len(rows), chunk_size):
-                self._conn.executemany(insert_sql, rows[start : start + chunk_size])
-            return
-
         upsert_sql = (
             insert_sql
             + """
@@ -76,8 +49,33 @@ class FilingsRepository:
                 updated_at = excluded.updated_at
             """
         )
-        for start in range(0, len(rows), chunk_size):
-            self._conn.executemany(upsert_sql, rows[start : start + chunk_size])
+
+        sql = upsert_sql
+        if len(ciks) == 1:
+            self._conn.execute("DELETE FROM filings WHERE cik = ?", [next(iter(ciks))])
+            sql = insert_sql
+        for batch in batched(filings, 500):
+            rows: list[list[object]] = [
+                [
+                    filing.accession_number,
+                    filing.cik,
+                    filing.form,
+                    filing.filing_date,
+                    filing.report_date,
+                    filing.acceptance_datetime,
+                    filing.available_at,
+                    filing.primary_document,
+                    filing.file_number,
+                    filing.film_number,
+                    filing.is_xbrl,
+                    filing.is_inline_xbrl,
+                    filing.source_url,
+                    now,
+                    now,
+                ]
+                for filing in batch
+            ]
+            self._conn.executemany(sql, rows)
 
     def list_for_ticker(
         self,

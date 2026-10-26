@@ -10,6 +10,7 @@ import duckdb
 from equitytrace.market.models import SharesOutstandingResult
 from equitytrace.repositories.market import MarketRepository
 from equitytrace.repositories.securities import SecuritiesRepository
+from equitytrace.transactions import consistent_read
 
 # Priority: (taxonomy, concept). Lower index = higher priority.
 _SHARES_CANDIDATES: tuple[tuple[str, str], ...] = (
@@ -28,6 +29,7 @@ class SharesOutstandingService:
         self._securities = SecuritiesRepository(conn)
         self._market = MarketRepository(conn)
 
+    @consistent_read
     def get_shares_outstanding(
         self,
         ticker: str,

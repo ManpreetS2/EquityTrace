@@ -25,6 +25,7 @@ from equitytrace.financials.selector import (
 from equitytrace.models import FinancialFact
 from equitytrace.repositories.facts import FactsRepository
 from equitytrace.repositories.securities import SecuritiesRepository
+from equitytrace.transactions import consistent_read
 
 
 class FinancialsError(RuntimeError):
@@ -39,6 +40,7 @@ class FinancialsService:
         self._facts = FactsRepository(conn)
         self._securities = SecuritiesRepository(conn)
 
+    @consistent_read
     def get_snapshot(
         self,
         ticker: str,

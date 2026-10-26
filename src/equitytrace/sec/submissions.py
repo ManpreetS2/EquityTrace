@@ -22,7 +22,15 @@ def fetch_all_submissions(client: SecClient, cik: str) -> dict[str, Any]:
     archived_payloads: list[dict[str, Any]] = []
     for filename in archives:
         logger.info("Fetching archived submissions file %s for CIK %s", filename, cik)
-        archived_payloads.append(client.get_archived_submissions(filename))
+        archived = client.get_archived_submissions(filename)
+        accessions = archived.get("accessionNumber")
+        if not isinstance(accessions, list) or not accessions:
+            raise ValueError(f"Missing/empty archived SEC filing history: {filename}")
+        for key in ("filingDate", "form"):
+            values = archived.get(key)
+            if not isinstance(values, list) or len(values) != len(accessions):
+                raise ValueError(f"Incomplete archived SEC filing history: {filename}")
+        archived_payloads.append(archived)
     return merge_submissions(primary, archived_payloads)
 
 

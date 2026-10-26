@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from itertools import batched
 
 import duckdb
 
@@ -27,36 +28,7 @@ class FactsRepository:
         if not facts:
             return
         now = datetime.now(UTC)
-        rows: list[list[object]] = []
-        for fact in facts:
-            fact_id = fact.fact_id or compute_fact_id(fact)
-            rows.append(
-                [
-                    fact_id,
-                    fact.cik,
-                    fact.taxonomy,
-                    fact.concept,
-                    fact.label,
-                    fact.description,
-                    fact.unit,
-                    fact.value,
-                    fact.start_date,
-                    fact.end_date,
-                    fact.filing_date,
-                    fact.acceptance_datetime,
-                    fact.available_at,
-                    fact.accession_number,
-                    fact.form,
-                    fact.fiscal_year,
-                    fact.fiscal_period,
-                    fact.frame,
-                    fact.source_url,
-                    now,
-                    now,
-                ]
-            )
-
-        ciks = {str(row[1]) for row in rows}
+        ciks = {fact.cik for fact in facts}
         insert_sql = """
             INSERT INTO financial_facts (
                 fact_id, cik, taxonomy, concept, label, description, unit, value,
@@ -65,14 +37,6 @@ class FactsRepository:
                 created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
-        chunk_size = 2000
-        if len(ciks) == 1:
-            cik = next(iter(ciks))
-            self._conn.execute("DELETE FROM financial_facts WHERE cik = ?", [cik])
-            for start in range(0, len(rows), chunk_size):
-                self._conn.executemany(insert_sql, rows[start : start + chunk_size])
-            return
-
         upsert_sql = (
             insert_sql
             + """
@@ -91,8 +55,41 @@ class FactsRepository:
                 updated_at = excluded.updated_at
             """
         )
-        for start in range(0, len(rows), chunk_size):
-            self._conn.executemany(upsert_sql, rows[start : start + chunk_size])
+
+        sql = upsert_sql
+        if len(ciks) == 1:
+            self._conn.execute("DELETE FROM financial_facts WHERE cik = ?", [next(iter(ciks))])
+            sql = insert_sql
+        for batch in batched(facts, 2000):
+            rows: list[list[object]] = []
+            for fact in batch:
+                fact_id = fact.fact_id or compute_fact_id(fact)
+                rows.append(
+                    [
+                        fact_id,
+                        fact.cik,
+                        fact.taxonomy,
+                        fact.concept,
+                        fact.label,
+                        fact.description,
+                        fact.unit,
+                        fact.value,
+                        fact.start_date,
+                        fact.end_date,
+                        fact.filing_date,
+                        fact.acceptance_datetime,
+                        fact.available_at,
+                        fact.accession_number,
+                        fact.form,
+                        fact.fiscal_year,
+                        fact.fiscal_period,
+                        fact.frame,
+                        fact.source_url,
+                        now,
+                        now,
+                    ]
+                )
+            self._conn.executemany(sql, rows)
 
     def search(
         self,

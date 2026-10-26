@@ -99,15 +99,12 @@ def test_amended_filing_does_not_overwrite_original(db: Database) -> None:
         assert FilingsRepository(conn).count() == 2
 
 
-def test_persist_failure_during_facts_is_repairable_by_reingest(
+def test_persist_failure_during_facts_rolls_back_and_can_retry(
     db: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    Large live Company Facts payloads cannot use a DuckDB multi-statement
-    transaction without OOM, so a mid-persist failure may leave issuer rows.
-
-    Re-ingestion must still repair and remain idempotent.
+    A fact-write failure rolls back metadata too; a clean retry can publish.
     """
     repo = IngestionRepository(db)
     issuer = Issuer(cik="0000320193", legal_name="Apple Inc.")
@@ -142,8 +139,8 @@ def test_persist_failure_during_facts_is_repairable_by_reingest(
         )
 
     with db.session(read_only=True) as conn:
-        assert IssuersRepository(conn).count() == 1
-        assert SecuritiesRepository(conn).count() == 1
+        assert IssuersRepository(conn).count() == 0
+        assert SecuritiesRepository(conn).count() == 0
         assert FactsRepository(conn).count() == 0
 
     monkeypatch.setattr(FactsRepository, "upsert_many", original_upsert)
