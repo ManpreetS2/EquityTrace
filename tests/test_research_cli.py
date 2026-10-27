@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+from rich.console import Console
 from typer.testing import CliRunner
 
 from equitytrace.cli import app
@@ -399,3 +401,30 @@ def test_persistence_roundtrip_fingerprint(tmp_path: Path, monkeypatch) -> None:
         loaded = PortfolioRepository(conn).get_run(result.run_id)
     assert loaded is not None
     assert fingerprint_request(loaded.request) == expected
+
+
+@pytest.mark.parametrize("width", [20, 40, 80])
+def test_all_research_commands_preserve_complete_fingerprint(
+    tmp_path: Path,
+    monkeypatch,
+    width: int,  # type: ignore[no-untyped-def]
+) -> None:
+    monkeypatch.setattr("equitytrace.cli_research.console", Console(width=width))
+    db_path, strategy_path = _prepare(tmp_path, monkeypatch)
+    expected = fingerprint_strategy(load_strategy(strategy_path))
+    for command in ("validate", "run"):
+        result = runner.invoke(app, ["research", command, "--strategy", str(strategy_path)])
+        assert result.exit_code == 0, result.output
+        assert f"fingerprint={expected}" in result.output.splitlines()
+    with Database(db_path).session(read_only=True) as conn:
+        run_id = conn.execute("SELECT run_id FROM portfolio_runs").fetchone()[0]
+    for command in ("show", "report", "export"):
+        args = ["research", command, run_id]
+        if command != "show":
+            args += [
+                "--output",
+                str(tmp_path / ("report.html" if command == "report" else "export")),
+            ]
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+        assert f"fingerprint={expected}" in result.output.splitlines()
