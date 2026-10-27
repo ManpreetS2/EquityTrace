@@ -118,4 +118,3 @@ Non-vintage provider history, survivorship and live-provider coverage are docume
 ## Next action
 
 **Obtain independent ChatGPT review of this proposed Option C publication contract against the original reports, traces, manifests and rejected prototype, recovering that bundle from the macOS investigation workspace first.** Review must resolve recovered-read/index handling and legacy certification before architecture changes or implementation. No new PR, merge, dependency change, live provider run, termination experiment, tag or publication should occur at this stage.
-
