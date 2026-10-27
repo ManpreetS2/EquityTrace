@@ -113,6 +113,31 @@ portfolio backtest
   -> CLI `equitytrace portfolio backtest`
 ```
 
+### SEC ingestion qualification and recovery
+
+`IngestionRepository` owns atomic issuer replacement and successful run publication.
+`sec/validation.py` rejects invalid complete inputs before persistence; malformed supplied
+start dates must not become instant facts. `transactions.py` joins caller-owned snapshots
+for financial/factor/market/backtest reads; portfolio persistence follows the read scope.
+Reconciliation compares selective and streamed unfiltered views in one owned transaction.
+
+Offline qualification ownership:
+
+* `scripts/qualify_sec_recovery.py` + `sec_recovery_checks.py`: complete old/new
+  oracles, index-first actual plans, PIT/cross-issuer checks, phase markers and retries.
+  Default is a read-only plan; `--self-check` is normal-only. Termination mode requires
+  separate explicit authorization and has NOT been qualified.
+* `scripts/qualify_sec_envelope.py`: finite baseline/large-text/diverse profiles,
+  at most 25,000 live facts, incremental memory evidence and cooperative exception stops.
+* `tests/test_sec_recovery_harness.py`, `test_sec_envelope.py`, `test_sec_admission.py`:
+  non-destructive harness, fixture and pre-publication period validation regressions.
+* `tests/test_atomic_ingestion.py`, `test_reconciliation.py`, `test_set_based_facts.py`:
+  publication, contradictory views, exact storage and rollback guarantees.
+
+Release remains blocked on crash qualification and a supported memory envelope.
+Large-text input exceeded the provisional 1-GiB process target; existing admission limits
+are not a memory guarantee. See `audits/v1-finishing-sprint.md`. No history is truncated.
+
 ### SEC ingestion
 
 Starts at `src/equitytrace/repositories/ingestion.py` (`IngestionRepository.ingest_ticker`)

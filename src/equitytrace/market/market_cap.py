@@ -15,6 +15,7 @@ from equitytrace.market.models import (
 from equitytrace.market.shares import SharesOutstandingService
 from equitytrace.market.splits import reconcile_share_basis
 from equitytrace.repositories.market import MarketRepository
+from equitytrace.transactions import consistent_read
 
 
 class MarketCapFrequency(StrEnum):
@@ -34,6 +35,7 @@ class MarketCapService:
         self._repo = MarketRepository(conn)
         self._shares = SharesOutstandingService(conn)
 
+    @consistent_read
     def get_market_cap(
         self,
         ticker: str,
@@ -287,6 +289,7 @@ class MarketCapService:
             warnings=tuple(dict.fromkeys(warnings)),
         )
 
+    @consistent_read
     def get_market_cap_series(
         self,
         ticker: str,

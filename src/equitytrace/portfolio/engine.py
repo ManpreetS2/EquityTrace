@@ -63,6 +63,7 @@ from equitytrace.portfolio.signals import (
 from equitytrace.portfolio.skfolio_adapter import OptimizerUnavailable, minimum_variance_weights
 from equitytrace.repositories.market import MarketRepository
 from equitytrace.repositories.portfolio import PortfolioRepository
+from equitytrace.transactions import consistent_read
 
 
 class PortfolioUnavailable(RuntimeError):
@@ -232,6 +233,7 @@ class BacktestEngine:
                 )
         return result
 
+    @consistent_read
     def _execute(
         self,
         run_id: str,

@@ -51,6 +51,11 @@ def _fmt(value: float | None) -> str:
     return f"{value:.6g}"
 
 
+def _print_fingerprint(digest: str) -> None:
+    # Keep the copyable identifier outside width-constrained panels.
+    console.print(f"fingerprint={digest}", soft_wrap=True, markup=False, highlight=False)
+
+
 @research_app.command("validate")
 def validate_cmd(
     strategy_path: Annotated[
@@ -68,10 +73,11 @@ def validate_cmd(
     direction = get_factor(strategy.factor).ranking_direction
     console.print(
         Panel.fit(
-            f"name=[bold]{strategy.name}[/bold]\nfingerprint={digest}",
+            f"name=[bold]{strategy.name}[/bold]",
             title="research validate",
         )
     )
+    _print_fingerprint(digest)
     table = Table()
     table.add_column("Field")
     table.add_column("Value")
@@ -131,7 +137,6 @@ def run_cmd(
     console.print(
         Panel.fit(
             f"strategy=[bold]{strategy.name}[/bold]\n"
-            f"fingerprint={digest}\n"
             f"run_id={result.run_id}\n"
             f"status={result.status.value}\n"
             f"package_version={result.package_version}\n"
@@ -141,6 +146,7 @@ def run_cmd(
             title="research run",
         )
     )
+    _print_fingerprint(digest)
     if result.status is PortfolioRunStatus.SUCCESS and result.metrics is not None:
         metrics = result.metrics
         table = Table()
@@ -192,12 +198,12 @@ def show_cmd(
     console.print(
         Panel.fit(
             f"run_id={result.run_id}\n"
-            f"fingerprint={digest}\n"
             f"package_version={result.package_version}\n"
             f"status={result.status.value}",
             title="research show",
         )
     )
+    _print_fingerprint(digest)
     table = Table()
     table.add_column("Field")
     table.add_column("Value")
@@ -288,13 +294,13 @@ def report_cmd(
         Panel.fit(
             f"report={written}\n"
             f"run_id={result.run_id}\n"
-            f"fingerprint={digest}\n"
             f"research_status={result.status.value}\n"
             "note=Report generation succeeded; research_status is the stored "
             "economic result, not the report write status.",
             title="research report",
         )
     )
+    _print_fingerprint(digest)
 
 
 @research_app.command("export")
@@ -325,8 +331,8 @@ def export_cmd(
             f"request_json={request_path}\n"
             f"result_json={result_path}\n"
             f"run_id={result.run_id}\n"
-            f"fingerprint={digest}\n"
             f"research_status={result.status.value}",
             title="research export",
         )
     )
+    _print_fingerprint(digest)

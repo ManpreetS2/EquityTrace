@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -641,23 +641,46 @@ def test_timestamps_are_utc_and_timezone_independent(
     html_default = render_research_report(loaded)
     assert expected_created in html_default
 
+    # Exercise aware non-UTC inputs on every platform, including Windows.
+    for offset in (-8, 9):
+        zone = timezone(timedelta(hours=offset))
+        shifted = loaded.model_copy(
+            update={
+                "created_at": loaded.created_at.astimezone(zone),
+                "rebalances": tuple(
+                    rebalance.model_copy(
+                        update={"decision_at": rebalance.decision_at.astimezone(zone)}
+                    )
+                    for rebalance in loaded.rebalances
+                ),
+            }
+        )
+        assert render_research_report(shifted) == html_default
+
+    # Only POSIX exposes process-wide timezone switching. UTC/input checks above
+    # and below remain mandatory even when tzset is absent.
+    tzset = getattr(time, "tzset", None)
     previous_tz = os.environ.get("TZ")
     try:
         monkeypatch.setenv("TZ", "America/Los_Angeles")
-        time.tzset()
+        if tzset is not None:
+            tzset()
         html_west = render_research_report(loaded)
         monkeypatch.setenv("TZ", "Asia/Tokyo")
-        time.tzset()
+        if tzset is not None:
+            tzset()
         html_east = render_research_report(loaded)
         monkeypatch.setenv("TZ", "UTC")
-        time.tzset()
+        if tzset is not None:
+            tzset()
         html_utc = render_research_report(loaded)
     finally:
         if previous_tz is None:
             os.environ.pop("TZ", None)
         else:
             os.environ["TZ"] = previous_tz
-        time.tzset()
+        if tzset is not None:
+            tzset()
 
     assert html_west == html_east == html_utc == html_default
     assert expected_created in html_west
