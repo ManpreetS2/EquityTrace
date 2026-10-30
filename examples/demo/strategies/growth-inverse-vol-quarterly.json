@@ -1,0 +1,26 @@
+{
+  "name": "Synthetic revenue-growth inverse-vol quarterly",
+  "description": "SYNTHETIC DEMO ONLY. Fictional issuers; not investment advice. Revenue growth, top 3, inverse volatility, quarterly.",
+  "tickers": [
+    "SYAL",
+    "SYBR",
+    "SYCD",
+    "SYDL",
+    "SYEN",
+    "SYFM",
+    "SYGA"
+  ],
+  "factor": "revenue_growth",
+  "top_n": 3,
+  "baseline": "inverse_vol",
+  "start_date": "2023-07-03",
+  "end_date": "2024-12-31",
+  "schedule": "quarterly",
+  "explicit_dates": [],
+  "calendar_symbol": "SYNX",
+  "benchmark_symbol": "SYNX",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}

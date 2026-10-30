@@ -113,3 +113,23 @@ def fixture_archive() -> dict[str, object]:
 @pytest.fixture
 def fixture_facts() -> dict[str, object]:
     return _load("company_facts_aapl.json")  # type: ignore[return-value]
+
+
+@pytest.fixture(scope="session")
+def demo_prototype(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """One prepared synthetic demo directory per test session (built once, ~10 s)."""
+    from equitytrace.demo.prepare import prepare_demo
+
+    directory = tmp_path_factory.mktemp("demo-prototype") / "demo"
+    prepare_demo(directory)
+    return directory
+
+
+@pytest.fixture
+def demo_dir(demo_prototype: Path, tmp_path: Path) -> Path:
+    """A private copy of the prepared demo so tests never share saved runs."""
+    import shutil
+
+    target = tmp_path / "demo"
+    shutil.copytree(demo_prototype, target)
+    return target

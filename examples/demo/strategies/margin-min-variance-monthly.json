@@ -1,0 +1,26 @@
+{
+  "name": "Synthetic operating-margin minimum-variance monthly",
+  "description": "SYNTHETIC DEMO ONLY. Fictional issuers; not investment advice. Operating-margin change, top 3, minimum variance, monthly.",
+  "tickers": [
+    "SYAL",
+    "SYBR",
+    "SYCD",
+    "SYDL",
+    "SYEN",
+    "SYFM",
+    "SYGA"
+  ],
+  "factor": "operating_margin_change",
+  "top_n": 3,
+  "baseline": "min_variance",
+  "start_date": "2023-07-03",
+  "end_date": "2024-12-31",
+  "schedule": "monthly",
+  "explicit_dates": [],
+  "calendar_symbol": "SYNX",
+  "benchmark_symbol": "SYNX",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}

@@ -128,3 +128,5 @@ jobs:
           tests/test_portfolio_schedules.py::test_scheduled_backtest_is_deterministic
           tests/test_strategy.py::test_fingerprint_deterministic_under_hash_seed
           tests/test_research_reporting.py::test_report_determinism_under_hash_seed
+          tests/test_demo_data.py::test_digest_is_deterministic_and_pinned
+          tests/test_demo_service.py::test_valid_strategy_has_stable_canonical_json_and_economic_fingerprint

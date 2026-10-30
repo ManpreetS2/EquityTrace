@@ -24,6 +24,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional local, offline research demo UI. The core package and CLI do not import it.
+demo = [
+    "streamlit>=1.40.0",
+]
 dev = [
     "mypy>=1.10.0",
     "pytest>=8.2.0",
@@ -49,6 +53,9 @@ package = true
 config-settings = { editable_mode = "compat" }
 
 [dependency-groups]
+demo = [
+    "streamlit>=1.40.0",
+]
 dev = [
     "mypy>=1.10.0",
     "pytest>=8.2.0",

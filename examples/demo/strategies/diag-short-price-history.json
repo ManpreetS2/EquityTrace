@@ -1,0 +1,26 @@
+{
+  "name": "Diagnostic: insufficient optimizer history",
+  "description": "SYNTHETIC DEMO ONLY. Fictional issuers; not investment advice. Expected UNAVAILABLE: fewer than 253 aligned closes.",
+  "tickers": [
+    "SYAL",
+    "SYBR",
+    "SYCD",
+    "SYDL",
+    "SYEN",
+    "SYFM",
+    "SYGA"
+  ],
+  "factor": "roa",
+  "top_n": 3,
+  "baseline": "inverse_vol",
+  "start_date": "2023-01-03",
+  "end_date": "2023-04-28",
+  "schedule": "monthly",
+  "explicit_dates": [],
+  "calendar_symbol": "SYNX",
+  "benchmark_symbol": "SYNX",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}

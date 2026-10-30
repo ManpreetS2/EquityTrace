@@ -121,7 +121,7 @@ def test_no_duplicate_as_of_parsers_remain() -> None:
     src = Path(__file__).resolve().parents[1] / "src" / "equitytrace"
     definitions: list[str] = []
     for path in src.rglob("*.py"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         definitions += [
             f"{path.name}:{m}" for m in re.findall(r"^def (_?parse_as_of)\(", text, re.M)
         ]

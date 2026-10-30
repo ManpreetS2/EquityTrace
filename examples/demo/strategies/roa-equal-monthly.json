@@ -1,0 +1,26 @@
+{
+  "name": "Synthetic ROA equal-weight monthly",
+  "description": "SYNTHETIC DEMO ONLY. Fictional issuers; not investment advice. Return on assets, top 3, equal weight, monthly.",
+  "tickers": [
+    "SYAL",
+    "SYBR",
+    "SYCD",
+    "SYDL",
+    "SYEN",
+    "SYFM",
+    "SYGA"
+  ],
+  "factor": "roa",
+  "top_n": 3,
+  "baseline": "equal_weight",
+  "start_date": "2023-07-03",
+  "end_date": "2024-12-31",
+  "schedule": "monthly",
+  "explicit_dates": [],
+  "calendar_symbol": "SYNX",
+  "benchmark_symbol": "SYNX",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}
