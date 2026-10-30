@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import streamlit as st
 
-from equitytrace.demo.explain import WARNING_TEXT, explain_reason
+from equitytrace.demo.explain import METRIC_HELP, WARNING_TEXT, explain_reason
 from equitytrace.demo.service import DemoService
 from equitytrace.demo.views import (
+    NAV_AXIS_NOTE,
+    allocation_chart,
     allocation_rows,
+    drawdown_chart,
     equity_rows,
     metric_cells,
+    nav_chart,
     rebalance_summary_rows,
 )
 from equitytrace.factors.registry import UnknownFactorError, get_factor
@@ -90,16 +94,24 @@ def render(service: DemoService) -> None:
 
     st.subheader("Performance (read from the saved run)")
     metric_grid(metric_cells(result))
+    with st.expander("Metric definitions and units"):
+        for name, text in METRIC_HELP.items():
+            st.markdown(f"- **{name.replace('_', ' ')}** - {text}")
+        st.markdown(
+            "- Returns and drawdowns are fractions shown as percentages; NAV is in units of "
+            "the initial NAV; costs are in NAV units."
+        )
     rows = equity_rows(result)
     st.subheader("Portfolio NAV vs benchmark")
-    series = ["Portfolio NAV"]
-    if any(row["Benchmark NAV"] is not None for row in rows):
-        series.append("Benchmark NAV")
-    else:
+    if not any(row["Benchmark NAV"] is not None for row in rows):
         st.caption("No benchmark series is available for this run.")
-    st.line_chart(rows, x="date", y=series)
+    nav_data, nav_spec = nav_chart(rows, result.request.initial_nav)
+    st.vega_lite_chart(nav_data, nav_spec, width="stretch")
+    st.caption(NAV_AXIS_NOTE)
     st.subheader("Drawdown")
-    st.area_chart(rows, x="date", y="Drawdown")
+    drawdown_data, drawdown_spec = drawdown_chart(rows)
+    st.vega_lite_chart(drawdown_data, drawdown_spec, width="stretch")
+    st.caption("Drawdown is measured from the highest NAV reached so far; zero means at a peak.")
     allocations = allocation_rows(result)
     st.subheader("Target allocation at each rebalance")
     if allocations:
@@ -107,7 +119,8 @@ def render(service: DemoService) -> None:
             "Target weights set at each successful rebalance's effective time. Weights then "
             "drift with returns between rebalances; daily drifted weights are not stored."
         )
-        st.bar_chart(allocations, x="effective", y="target_weight", color="symbol")
+        allocation_data, allocation_spec = allocation_chart(allocations)
+        st.vega_lite_chart(allocation_data, allocation_spec, width="stretch")
     else:
         st.caption("No successful rebalance, so there is no allocation to chart.")
     st.subheader("Rebalances")

@@ -734,7 +734,9 @@ class DemoService:
         try:
             with self._session(read_only=True) as conn:
                 return PortfolioRepository(conn).get_run(cleaned)
-        except (DemoNotPreparedError, duckdb.Error):
+        except (DemoNotPreparedError, duckdb.Error, ValueError):
+            # ValueError covers pydantic.ValidationError and JSON decoding of a damaged row:
+            # an unreadable saved run is reported as unavailable, never half-displayed.
             return None
 
     # --------------------------------------------------------------- exports

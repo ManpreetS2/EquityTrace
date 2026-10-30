@@ -72,6 +72,9 @@ def render(service: DemoService) -> None:
         st.warning(note)
     st.subheader("Signal evidence")
     table(detail.evidence, empty="No signal provenance was stored for this rebalance.")
+    for symbol, provenance in detail.provenance.items():
+        with st.expander(f"Raw signal provenance for {symbol} (as stored)"):
+            st.json(provenance, expanded=1)
     filings = service.filings_by_accession(detail.accessions)
     if filings:
         st.subheader("Source filings and when they became public")
