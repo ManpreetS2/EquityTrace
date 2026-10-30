@@ -16,6 +16,11 @@ from pathlib import Path
 
 def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
     merged = os.environ.copy()
+    # Child and parent must agree on one encoding whatever the ambient environment says. Without
+    # this, PYTHONIOENCODING=utf-8 (child writes UTF-8) combined with a cp1252 locale (parent
+    # decodes cp1252) fails on Windows while the commands themselves are healthy.
+    merged["PYTHONUTF8"] = "1"
+    merged["PYTHONIOENCODING"] = "utf-8"
     if env:
         merged.update(env)
     result = subprocess.run(
@@ -25,6 +30,8 @@ def _run(cmd: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     return (result.stdout or "") + (result.stderr or "")
 

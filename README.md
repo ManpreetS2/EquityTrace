@@ -161,7 +161,7 @@ persisted run, HTML and JSON exports regenerate byte-identically.
 - Tied factor scores at the top-N cutoff are broken alphabetically and flagged `top_n_tie_at_cutoff`
 - User universes may embed survivorship bias
 - No share/fill execution ledger, intraday book, or broker APIs
-- No web UI / Streamlit / FastAPI
+- Optional local Streamlit research demo; no hosted service or broker execution
 - No additional optimizer families beyond min-variance
 - No historical constituent database
 - v1.0.0 is prepared here but **not** tagged/published until explicit approval

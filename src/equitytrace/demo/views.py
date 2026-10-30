@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from equitytrace.portfolio.models import (
     BacktestResult,
@@ -72,6 +73,14 @@ _METRIC_LAYOUT: tuple[tuple[str, str, str], ...] = (
 )
 
 
+EASTERN = ZoneInfo("America/New_York")
+
+
+def et_text(value: datetime) -> str:
+    """Exchange-local rendering of a persisted UTC instant (the decision-time clock)."""
+    return value.astimezone(EASTERN).strftime("%Y-%m-%d %H:%M %Z")
+
+
 def equity_rows(result: BacktestResult) -> list[dict[str, Any]]:
     """Persisted equity curve, one row per valuation session."""
     return [
@@ -88,15 +97,20 @@ def equity_rows(result: BacktestResult) -> list[dict[str, Any]]:
 
 
 def allocation_rows(result: BacktestResult) -> list[dict[str, Any]]:
-    """Target weights after each successful rebalance (not daily drifted weights)."""
+    """Target weights after each successful rebalance (not daily drifted weights).
+
+    Names that are not held after the rebalance are omitted rather than drawn as zero bars.
+    """
     rows: list[dict[str, Any]] = []
     for rebalance in result.rebalances:
         if rebalance.status.value != "success":
             continue
         for item in rebalance.transitions:
+            if item.target_weight_after <= 0:
+                continue
             rows.append(
                 {
-                    "effective": rebalance.target_effective_at,
+                    "effective": rebalance.target_effective_at.date().isoformat(),
                     "symbol": item.symbol,
                     "target_weight": item.target_weight_after,
                 }
@@ -104,12 +118,111 @@ def allocation_rows(result: BacktestResult) -> list[dict[str, Any]]:
     return rows
 
 
+NAV_AXIS_NOTE = (
+    "The NAV axis does not start at zero: it is scaled to the data so differences between "
+    "the lines are visible. Read it as relative change; the dashed line is the starting NAV."
+)
+
+
+def nav_chart(
+    rows: list[dict[str, Any]], initial_nav: float
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Long-form data and a Vega-Lite spec for portfolio vs benchmark NAV.
+
+    A line chart of a ratio that starts at 1.0 is legitimately drawn on a data-fitted axis; the
+    dashed rule marks the starting NAV so the scale cannot be mistaken for a zero baseline. Missing
+    benchmark values are left out, never drawn as zero.
+    """
+    data: list[dict[str, Any]] = []
+    for row in rows:
+        stamp = row["date"].isoformat()
+        data.append({"date": stamp, "series": "Portfolio NAV", "nav": row["Portfolio NAV"]})
+        if row["Benchmark NAV"] is not None:
+            data.append({"date": stamp, "series": "Benchmark NAV", "nav": row["Benchmark NAV"]})
+    spec: dict[str, Any] = {
+        "layer": [
+            {
+                "mark": {"type": "line", "strokeWidth": 2},
+                "encoding": {
+                    "x": {"field": "date", "type": "temporal", "title": None},
+                    "y": {
+                        "field": "nav",
+                        "type": "quantitative",
+                        "scale": {"zero": False},
+                        "title": f"NAV (starts at {initial_nav:g})",
+                    },
+                    "color": {"field": "series", "type": "nominal", "title": None},
+                    "tooltip": [
+                        {"field": "date", "type": "temporal"},
+                        {"field": "series", "type": "nominal"},
+                        {"field": "nav", "type": "quantitative", "format": ".4f"},
+                    ],
+                },
+            },
+            {
+                "mark": {"type": "rule", "strokeDash": [4, 4], "opacity": 0.6},
+                "encoding": {"y": {"datum": initial_nav}},
+            },
+        ]
+    }
+    return data, spec
+
+
+def drawdown_chart(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Drawdown from the running peak in percent; the zero baseline is the peak itself."""
+    data = [{"date": row["date"].isoformat(), "drawdown": row["Drawdown"]} for row in rows]
+    spec: dict[str, Any] = {
+        "mark": {"type": "area", "opacity": 0.5, "line": True},
+        "encoding": {
+            "x": {"field": "date", "type": "temporal", "title": None},
+            "y": {
+                "field": "drawdown",
+                "type": "quantitative",
+                "axis": {"format": ".0%"},
+                "title": "Drawdown from running peak",
+            },
+            "tooltip": [
+                {"field": "date", "type": "temporal"},
+                {"field": "drawdown", "type": "quantitative", "format": ".2%"},
+            ],
+        },
+    }
+    return data, spec
+
+
+def allocation_chart(
+    allocations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Stacked target weights per rebalance (each bar sums to 100% when fully invested)."""
+    spec: dict[str, Any] = {
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "effective", "type": "ordinal", "title": "Effective session"},
+            "y": {
+                "field": "target_weight",
+                "type": "quantitative",
+                "stack": "zero",
+                "axis": {"format": ".0%"},
+                "scale": {"domain": [0, 1]},
+                "title": "Target weight",
+            },
+            "color": {"field": "symbol", "type": "nominal", "title": "Security"},
+            "tooltip": [
+                {"field": "effective", "type": "ordinal"},
+                {"field": "symbol", "type": "nominal"},
+                {"field": "target_weight", "type": "quantitative", "format": ".2%"},
+            ],
+        },
+    }
+    return allocations, spec
+
+
 def rebalance_summary_rows(result: BacktestResult) -> list[dict[str, Any]]:
     return [
         {
             "#": index + 1,
-            "Decision (UTC)": rebalance.decision_at,
-            "Target effective (UTC)": rebalance.target_effective_at,
+            "Decision (ET)": et_text(rebalance.decision_at),
+            "Target effective (ET)": et_text(rebalance.target_effective_at),
             "Status": rebalance.status.value,
             "Reason": rebalance.reason or "",
             "Selected": ", ".join(
@@ -129,6 +242,7 @@ class DecisionDetail:
     rebalance: RebalanceRecord
     rows: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
+    provenance: dict[str, dict[str, Any]]
     tie_notes: list[str]
     accessions: tuple[str, ...]
 
@@ -139,10 +253,13 @@ def decision_detail(rebalance: RebalanceRecord) -> DecisionDetail:
     evidence: list[dict[str, Any]] = []
     tie_notes: list[str] = []
     accessions: list[str] = []
+    raw_provenance: dict[str, dict[str, Any]] = {}
     for item in rebalance.transitions:
         provenance = _provenance(item.signal_provenance_json)
         filings = [str(a) for a in provenance.get("source_filings", [])]
         accessions.extend(filings)
+        if provenance:
+            raw_provenance[item.symbol] = provenance
         rows.append(
             {
                 "Symbol": item.symbol,
@@ -179,6 +296,7 @@ def decision_detail(rebalance: RebalanceRecord) -> DecisionDetail:
         rebalance=rebalance,
         rows=rows,
         evidence=evidence,
+        provenance=raw_provenance,
         tie_notes=list(dict.fromkeys(tie_notes)),
         accessions=tuple(dict.fromkeys(accessions)),
     )

@@ -16,7 +16,8 @@ Market data
 Market analytics
 Portfolio/backtest — native weight-return research (v0.3c)
 Research strategies — typed JSON + research CLI (v1.0 Milestone 1)
-Presentation/HTML report — future (v1.0 Milestone 2)
+Presentation/HTML report and deterministic JSON exports (v1.0 candidate)
+Optional local synthetic Streamlit demo (v1.0 candidate)
 ```
 
 ## Layers
@@ -187,3 +188,10 @@ v1.0 Milestone 3 productizes the completed CLI + offline HTML workflow, ships an
 offline synthetic demonstration (`scripts/demo_research.py`), and prepares
 package version `1.0.0`. Publishing the annotated `v1.0.0` tag / GitHub Release
 is a separate approval step. Additional optimizers remain out of scope.
+
+The candidate also includes an optional local Streamlit presentation layer in `ui/`.
+`demo/service.py` reuses the research engine and repositories; `demo/views.py` transforms
+persisted results for display without changing financial calculations. Synthetic preparation
+uses a verified scratch database, separate from the configured research database. The UI
+does not ingest live data. See `docs/releases/v1.0-readiness.md` for verification and the
+outstanding SEC capacity, crash qualification, and integration gates.

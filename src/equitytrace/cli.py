@@ -59,6 +59,27 @@ def deprecated_filingedge_cli() -> None:
     app()
 
 
+def ensure_unicode_output() -> None:
+    """Make redirected output able to carry the CLI's Unicode text.
+
+    Output contains characters such as ``→``. A terminal handles them, but a pipe or file
+    on a legacy Windows code page (for example cp1252) would raise ``UnicodeEncodeError`` in the
+    middle of a command, after any research had already been persisted. Non-terminal streams
+    that cannot encode UTF-8 are switched to UTF-8; terminals and UTF-8 streams are untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        encoding = (
+            (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+        )
+        if reconfigure is None or encoding == "utf8" or stream.isatty():
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):  # closed or non-reconfigurable stream
+            continue
+
+
 def _configure_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -91,6 +112,7 @@ def main(
     ] = False,
 ) -> None:
     """EquityTrace CLI."""
+    ensure_unicode_output()
     _configure_logging(verbose)
 
 

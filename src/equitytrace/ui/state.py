@@ -26,9 +26,66 @@ def get_service() -> DemoService:
     return service
 
 
+# Data-entry widgets whose values must survive navigating to another screen. Streamlit discards
+# the state of any widget that is not rendered in a run, which would silently throw away a
+# half-edited strategy as soon as the user opened the Results screen. Buttons are excluded:
+# their keys cannot be assigned.
+PERSISTENT_WIDGET_KEYS: tuple[str, ...] = (
+    "sb_preset",
+    "sb_name",
+    "sb_desc",
+    "sb_tickers",
+    "sb_factor",
+    "sb_top_n",
+    "sb_baseline",
+    "sb_start",
+    "sb_end",
+    "sb_schedule",
+    "sb_explicit",
+    "sb_cost",
+    "sb_nav",
+    "sb_benchmark",
+    "sb_calendar",
+    "sb_json_text",
+    "ex_ticker",
+    "ex_asof",
+    "ex_period",
+    "ex_factor",
+    "cmp_a",
+    "cmp_b",
+    "cmp_fy",
+    "insp_idx",
+    "rebuild_ok",
+)
+# Widgets that hold a run identity; meaningless once the dataset is rebuilt.
+RUN_BOUND_KEYS: tuple[str, ...] = (
+    *(
+        f"{screen}_{suffix}"
+        for screen in ("results", "inspect", "exports")
+        for suffix in ("run_select", "run_id_input")
+    ),
+    "insp_idx",
+)
+
+
+def persist_widget_state() -> None:
+    """Re-assign data-entry values at the top of every run so they are not discarded."""
+    for key in PERSISTENT_WIDGET_KEYS:
+        if key in st.session_state:
+            st.session_state[key] = st.session_state[key]
+
+
 def clear_dataset_state() -> None:
     """Drop everything derived from the stored dataset (after prepare or rebuild)."""
-    for key in ("run_cache", "selected_run_id", "last_run_message", "validation", "probe"):
+    for key in (
+        "run_cache",
+        "selected_run_id",
+        "last_run_id",
+        "last_run_message",
+        "validation",
+        "probe",
+        *RUN_BOUND_KEYS,
+    ):
         st.session_state.pop(key, None)
 
 

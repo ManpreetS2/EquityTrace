@@ -163,6 +163,9 @@ def test_inspecting_results_and_exports_never_reruns_research(
     labels = {m.label: m.value for m in results.metric}
     assert labels["Final NAV"] != "Unavailable" and labels["Successful rebalances"] == "17"
     assert "SUCCESS" in _texts(results.success)
+    assert len(results.get("vega_lite_chart")) == 3  # NAV vs benchmark, drawdown, allocation
+    assert "does not start at zero" in _texts(results.caption)
+    assert "Metric definitions and units" in [e.label for e in results.expander]
     exports = _go(results, "Reports & exports")
     assert len(exports.get("download_button")) == 4
     inspected = _go(exports, "Inspect decisions")
@@ -343,3 +346,49 @@ def test_explorer_comparison_shows_a_fact_becoming_public(
     assert revenue["Newly public accession"] == "0990000002-24-000001"
     filings = next(t for t in tables if "Public at this as-of?" in t.columns)
     assert list(filings["Public at this as-of?"]) == ["YES", "YES", "YES"]
+
+
+# ------------------------------------------------- state across navigation / rebuild
+def test_form_and_explorer_edits_survive_navigating_away_and_back(
+    demo_dir: Path, monkeypatch: pytest.MonkeyPatch, engine_calls: list[str]
+) -> None:
+    """Regression: Streamlit drops widget state for widgets not rendered in a run."""
+    app = _go(_app(demo_dir, monkeypatch), "Strategy builder")
+    app.number_input(key="sb_top_n").set_value(2).run()
+    app.text_input(key="sb_name").set_value("My edited strategy").run()
+    app.selectbox(key="sb_factor").select("revenue_growth").run()
+    for screen in ("Results", "Methodology & guide", "Data explorer"):
+        app = _go(app, screen)
+        if screen == "Data explorer":
+            app.selectbox(key="ex_ticker").select("SYFM").run()
+            app.date_input(key="ex_asof").set_value(date(2024, 5, 1)).run()
+    app = _go(app, "Strategy builder")
+    _ok(app)
+    assert app.number_input(key="sb_top_n").value == 2
+    assert app.text_input(key="sb_name").value == "My edited strategy"
+    assert app.selectbox(key="sb_factor").value == "revenue_growth"
+    app = _go(app, "Data explorer")
+    assert app.selectbox(key="ex_ticker").value == "SYFM"
+    assert app.date_input(key="ex_asof").value == date(2024, 5, 1)
+    assert engine_calls == []
+
+
+def test_rebuilding_the_demo_clears_every_trace_of_the_previous_runs(
+    demo_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = _go(_app(demo_dir, monkeypatch), "Strategy builder")
+    app.button(key="sb_run").click().run()
+    old_run = str(app.session_state["selected_run_id"])
+    assert "Last run" in _texts(app.subheader)
+    app = _go(app, "Overview")
+    app.checkbox(key="rebuild_ok").check().run()
+    app.button(key="rebuild_demo").click().run()
+    _ok(app)
+    for key in ("selected_run_id", "last_run_id", "run_cache"):
+        assert key not in app.session_state, key
+    app = _go(app, "Strategy builder")
+    _ok(app)
+    assert "Last run" not in _texts(app.subheader)
+    app = _go(app, "Results")
+    assert "No saved runs yet" in _texts(app.info)
+    assert DemoService(demo_dir).load_run(old_run) is None

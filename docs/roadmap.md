@@ -1,5 +1,10 @@
 # Roadmap
 
+Current candidate status (2026-10-30): the optional local synthetic research demo and
+hardening are implemented on stacked draft branches. v1.0 publication remains blocked by
+SEC capacity qualification, crash qualification and final integration approval. See
+[release readiness](releases/v1.0-readiness.md) for evidence and exact boundaries.
+
 ### v0.1
 
 * SEC ingestion

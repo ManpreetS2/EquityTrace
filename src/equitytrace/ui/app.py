@@ -19,7 +19,7 @@ from equitytrace.ui.screens import (
     results,
     strategy,
 )
-from equitytrace.ui.state import get_service
+from equitytrace.ui.state import get_service, persist_widget_state
 
 RENDERERS = {
     "Overview": overview.render,
@@ -39,6 +39,7 @@ def main() -> None:
         layout="wide",
     )
     st.session_state.setdefault("screen", SCREENS[0])
+    persist_widget_state()
     service = get_service()
     with st.sidebar:
         st.markdown("### EquityTrace")
