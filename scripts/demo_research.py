@@ -21,6 +21,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from equitytrace.database import initialize_database
+from equitytrace.demo.service import SYNTHETIC_REPORT_BANNER, label_synthetic_report
 from equitytrace.market.availability import bar_available_at
 from equitytrace.market.models import DailyPriceBar, MarketDataProviderName, PriceAdjustmentMode
 from equitytrace.models import FinancialFact, Issuer, Security
@@ -39,25 +40,19 @@ D0 = date(2024, 1, 2)
 D1 = date(2024, 1, 3)
 D2 = date(2024, 1, 4)
 D3 = date(2024, 1, 5)
-KNOWN = datetime(2023, 6, 1, tzinfo=UTC)
+# Fiscal years end 31 December. The FY2022 10-K is public only after its (synthetic)
+# acceptance in March 2023, and the FY2021 comparative 10-K a year earlier. The research
+# window is January 2024, when FY2022 is the newest annual report anyone could have seen.
+KNOWN = datetime(2023, 3, 1, 21, 30, tzinfo=UTC)
+PRIOR_KNOWN = datetime(2022, 3, 1, 21, 30, tzinfo=UTC)
 FETCHED = datetime(2025, 1, 2, tzinfo=UTC)
 
-BANNER = (
-    "SYNTHETIC DEMO ONLY — not live SEC/Twelve Data, not historical investment "
-    "performance, and not investment advice."
-)
+BANNER = SYNTHETIC_REPORT_BANNER
 
 
 def _label_report(html: str) -> str:
     """Stamp the standalone demo report so it cannot be mistaken for real results."""
-    marker = '<main class="page">\n'
-    if marker not in html:
-        raise RuntimeError("Report layout changed; cannot place the synthetic-demo label.")
-    banner = (
-        '<p role="note" style="border:2px solid #b45309;background:#fef3c7;color:#451a03;'
-        f'padding:12px;font-weight:bold">{BANNER}</p>\n'
-    )
-    return html.replace(marker, marker + banner, 1)
+    return label_synthetic_report(html)
 
 
 def _repo_root() -> Path:
@@ -104,6 +99,7 @@ def _annual_roa_facts(
     assets: float,
     prior_assets: float,
     available_at: datetime,
+    prior_available_at: datetime,
     accession: str,
 ) -> list[FinancialFact]:
     start = date(fiscal_year, 1, 1)
@@ -137,7 +133,7 @@ def _annual_roa_facts(
             value=prior_assets,
             start=None,
             end=prior_end,
-            available_at=available_at,
+            available_at=prior_available_at,
             accession=accession + "-P",
             fiscal_year=fiscal_year - 1,
         ),
@@ -147,7 +143,7 @@ def _annual_roa_facts(
             value=prior_assets / 10.0,
             start=prior_start,
             end=prior_end,
-            available_at=available_at,
+            available_at=prior_available_at,
             accession=accession + "-P",
             fiscal_year=fiscal_year - 1,
         ),
@@ -197,12 +193,13 @@ def seed_synthetic_universe(conn: object) -> None:
         filings=[],
         facts=_annual_roa_facts(
             cik="0001000001",
-            fiscal_year=2023,
+            fiscal_year=2022,
             net_income=20.0,
             assets=100.0,
             prior_assets=100.0,
             available_at=KNOWN,
-            accession="demo-aaa-2023",
+            prior_available_at=PRIOR_KNOWN,
+            accession="demo-aaa-2022",
         ),
     )
     save_company_snapshot(
@@ -212,12 +209,13 @@ def seed_synthetic_universe(conn: object) -> None:
         filings=[],
         facts=_annual_roa_facts(
             cik="0001000002",
-            fiscal_year=2023,
+            fiscal_year=2022,
             net_income=10.0,
             assets=100.0,
             prior_assets=100.0,
             available_at=KNOWN,
-            accession="demo-bbb-2023",
+            prior_available_at=PRIOR_KNOWN,
+            accession="demo-bbb-2022",
         ),
     )
     _add_adjusted_bars(conn, "SPY", [(day, 100.0 + index) for index, day in enumerate(days)])

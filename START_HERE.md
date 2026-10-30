@@ -8,7 +8,15 @@ Read [docs/PROJECT_MAP.md](docs/PROJECT_MAP.md) first. Then skim
 [docs/architecture.md](docs/architecture.md) and [docs/metrics.md](docs/metrics.md)
 before searching the tree.
 
-For a zero-credential walkthrough, run the offline synthetic demo first:
+For a zero-credential walkthrough, launch the interactive offline demo first
+(synthetic data, no SEC email or API key, local-only server):
+
+```bash
+uv run --extra demo python scripts/launch_demo.py
+```
+
+Open <http://127.0.0.1:8501> and press **Load synthetic demo**. A fast
+command-line smoke fixture is also available:
 
 ```bash
 uv sync --all-groups --locked

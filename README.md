@@ -5,7 +5,8 @@ reproducible strategies, and offline HTML reports.**
 
 EquityTrace turns SEC filings and market history into traceable financial
 statements, fundamental factors, and research backtests you can validate, run,
-inspect, and export—without a web app or broker.
+inspect, and export—with a CLI, standalone reports, and an optional local demo UI. There is no broker
+or live-trading layer.
 
 Latest published release: **v0.3.2**. This tree prepares **v1.0.0** (release
 candidate / not yet published as a GitHub Release).
@@ -33,20 +34,37 @@ available_at <= as_of
 Research decisions use that evidence boundary. Provider-adjusted prices are
 still **not** vendor-vintage point-in-time price history—see limitations.
 
-## Quickstart: offline synthetic demo
+## Quickstart: interactive offline demo (synthetic data)
 
-No SEC email, Twelve Data key, or internet required.
+No SEC email, Twelve Data key, or internet required. Everything shown is
+**fictional**: seven synthetic issuers (eight securities, one issuer with two
+share classes), 10-K facts with realistic filing chronology, and about two
+and a half years of generated daily prices.
+
+```bash
+uv run --extra demo python scripts/launch_demo.py
+```
+
+Then open <http://127.0.0.1:8501>, press **Load synthetic demo**, and follow the
+ten-step walkthrough in [examples/demo/README.md](examples/demo/README.md):
+explore point-in-time statements, build and validate a strategy, press **Run**
+(nothing runs until you do), inspect results and each rebalance decision, and
+download the standalone HTML report and deterministic JSON records.
+
+The UI is a thin local layer over the same models and services the CLI uses
+(`ResearchStrategy` → `BacktestEngine` → persisted run → HTML/JSON). Streamlit is
+an **optional** extra (`demo`); the core package and CLI do not import it.
+
+The original four-session smoke fixture remains available:
 
 ```bash
 uv sync --all-groups --locked
 uv run python scripts/demo_research.py
 ```
 
-Open the printed `research_report.html` path in a browser. Details:
-[examples/demo/README.md](examples/demo/README.md).
-
-The demo uses **synthetic** AAA/BBB evidence. NAV paths are research
-illustrations, **not** historical investment performance and **not** advice.
+Synthetic NAV paths are research illustrations, **not** historical investment
+performance and **not** advice. The demo does not certify live SEC ingestion
+capacity or crash recovery; those release gates are tracked separately.
 
 ## Research workflow
 

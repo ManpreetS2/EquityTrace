@@ -1,0 +1,28 @@
+{
+  "name": "Diagnostic: evidence not yet public",
+  "description": "SYNTHETIC DEMO ONLY. Fictional issuers; not investment advice. Expected UNAVAILABLE: no FY2020 revenue evidence.",
+  "tickers": [
+    "SYAL",
+    "SYBR",
+    "SYCD",
+    "SYDL",
+    "SYEN",
+    "SYFM",
+    "SYGA"
+  ],
+  "factor": "revenue_growth",
+  "top_n": 3,
+  "baseline": "equal_weight",
+  "start_date": "2023-01-03",
+  "end_date": "2023-02-28",
+  "schedule": "explicit",
+  "explicit_dates": [
+    "2023-01-31"
+  ],
+  "calendar_symbol": "SYNX",
+  "benchmark_symbol": "SYNX",
+  "cost_bps": 10.0,
+  "initial_nav": 1.0,
+  "provider": "twelve_data",
+  "adjustment_mode": "all"
+}

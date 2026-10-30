@@ -63,9 +63,12 @@ EquityTrace/
 │   ├── market/               # prices, shares, market cap, window analytics
 │   ├── portfolio/            # native research backtest + skfolio_adapter
 │   ├── strategy/             # ResearchStrategy JSON + economic fingerprints
-│   └── reporting/            # standalone HTML reports + deterministic JSON exports
-├── examples/demo/            # synthetic offline demo strategy + README
-├── scripts/demo_research.py  # offline synthetic end-to-end demo
+│   ├── reporting/            # standalone HTML reports + deterministic JSON exports
+│   ├── demo/                 # synthetic dataset, safe preparation, UI-free service (demo only)
+│   └── ui/                   # optional Streamlit presentation layer (extra: demo)
+├── examples/demo/            # demo README, smoke strategy, strategies/ presets as JSON
+├── scripts/demo_research.py  # offline synthetic four-session smoke demo
+├── scripts/launch_demo.py    # prepares/launches the local Streamlit demo
 ├── tests/                    # offline pytest suite (fixtures + mocks)
 ├── tests/fixtures/sec/       # canned EDGAR JSON
 ├── docs/                     # architecture, data model, roadmap, this map
@@ -76,11 +79,29 @@ EquityTrace/
 └── .env.example
 ```
 
-There is no frontend and no second market provider. skfolio is used only inside
+There is no production frontend and no second market provider. The only UI is
+the optional, local-only Streamlit demo (`src/equitytrace/ui/`, extra `demo`),
+which runs on a fictional synthetic dataset and contains no research logic. skfolio is used only inside
 `portfolio/skfolio_adapter.py` for minimum-variance target weights. The offline
 demo is source-checkout oriented (`scripts/demo_research.py`).
 
 ## Runtime architecture
+
+### Interactive synthetic demo (optional)
+
+`data.py` builds a deterministic fictional dataset (fixed-seed integer PRNG,
+content digest pinned by tests). `prepare.py` creates a dedicated DuckDB under a
+gitignored directory (default `data/demo/`), verifies it against the in-memory
+dataset, and renames it into place; it refuses any database lacking its marker
+manifest. `service.py` opens short-lived sessions, serialises access with one
+in-process lock, reuses `FinancialsService`, `FactorEngine`, `BacktestEngine`,
+`PortfolioRepository` and the reporting module, and is the only layer that writes
+(`prepare`, `run_strategy`). `views.py` shapes persisted results for display
+without recomputing metrics. The Streamlit screens (`ui/screens/`) only render
+and never import DuckDB. A rerun, navigation or download never prepares data or
+executes a backtest. The demo never reads `EQUITYTRACE_DATABASE_PATH`.
+
+Launch: `uv run --extra demo python scripts/launch_demo.py`.
 
 ```text
 ticker
@@ -361,7 +382,10 @@ These must never be violated:
 | Research strategies | `tests/test_strategy.py` |
 | Research CLI | `tests/test_research_cli.py` |
 | Research reports / exports | `tests/test_research_reporting.py` |
-| Offline synthetic demo | `tests/test_demo_research.py` |
+| Offline synthetic smoke demo | `tests/test_demo_research.py` |
+| Interactive demo dataset | `tests/test_demo_data.py`, `tests/test_demo_prepare.py` |
+| Interactive demo service / CLI parity | `tests/test_demo_service.py`, `tests/test_demo_integration.py` |
+| Interactive demo UI (Streamlit AppTest) | `tests/test_demo_ui.py` |
 | v0.3c migration | `tests/test_migration_v03c.py` |
 | Portfolio leakage / restatements | `tests/test_portfolio_leakage.py` |
 | Fixtures | `tests/fixtures/sec/`, `tests/helpers/` |
