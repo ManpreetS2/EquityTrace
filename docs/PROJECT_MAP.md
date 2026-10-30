@@ -564,6 +564,21 @@ PYTHONHASHSEED=1 uv run pytest
 PYTHONHASHSEED=42 uv run pytest
 ```
 
+## Final candidate verification additions
+
+`tests/test_demo_independent_oracle.py` independently recomputes the three successful demo
+presets from the synthetic specification. `test_demo_adversarial.py` covers exact availability
+boundaries, invalid exports and damaged stored state; `test_demo_views.py` checks chart and
+presentation helpers. `test_unicode_output.py` covers redirected legacy encodings and package
+smoke decoding. `test_migration_v100.py` checks additive legacy-shaped database upgrades;
+`test_release_smoke.py` exercises the complete offline prepare/research/reload/export path.
+
+Demo preparation commits each issuer and price series inside an unpublished scratch database
+to bound transaction memory, verifies the full content digest, then replaces the demo file.
+UI data-entry state survives navigation; rebuild clears run-bound selections. Damaged saved
+run JSON returns unavailable. Release evidence and remaining qualification gates are recorded
+in [v1.0-readiness.md](releases/v1.0-readiness.md).
+
 ## Map maintenance checklist
 
 Update this file in the same PR when any of the following change:
