@@ -17,8 +17,10 @@ import contextlib
 import json
 import os
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,7 @@ from equitytrace.demo.data import (
     DATASET_ID,
     DATASET_VERSION,
     DemoDataset,
+    SeriesBundle,
     build_dataset,
     digest_rows,
     row_bar,
@@ -154,35 +157,54 @@ def database_digest(path: Path) -> str:
 
 
 def _populate(path: Path, dataset: DemoDataset) -> None:
+    """Fill a brand-new scratch database.
+
+    The scratch file is verified and only then renamed into place, so a failure at any point
+    discards it entirely; transactions here are for memory, not for atomic publication.
+    Committing per issuer and per price series keeps DuckDB's transaction-local memory small
+    (one transaction over all ~5,700 bars peaked above 1 GiB; this stays near the baseline).
+    """
     db = Database(path)
     db.initialize()
     with db.session() as conn:
-        conn.execute("BEGIN TRANSACTION")
-        try:
-            for company in dataset.companies:
-                save_company_snapshot(
+        for company in dataset.companies:
+            _in_transaction(
+                conn,
+                partial(
+                    save_company_snapshot,
                     conn,
                     issuer=company.issuer,
                     securities=list(company.securities),
                     filings=list(company.filings),
                     facts=list(company.facts),
-                )
-            market = MarketRepository(conn)
-            for series in dataset.series:
-                instrument = market.get_or_create_instrument(
-                    series.symbol,
-                    asset_type=series.asset_type,
-                    security_ticker=series.symbol if series.issuer_cik else None,
-                    issuer_cik=series.issuer_cik,
-                    exchange="SYNTHETIC",
-                )
-                if instrument.instrument_id != series.bars[0].instrument_id:
-                    raise DemoPreparationError("Instrument identity does not match dataset.")
-                market.upsert_price_bars(list(series.bars))
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
+                ),
+            )
+        market = MarketRepository(conn)
+        for series in dataset.series:
+            _in_transaction(conn, partial(_store_series, market, series))
+
+
+def _store_series(market: MarketRepository, series: SeriesBundle) -> None:
+    instrument = market.get_or_create_instrument(
+        series.symbol,
+        asset_type=series.asset_type,
+        security_ticker=series.symbol if series.issuer_cik else None,
+        issuer_cik=series.issuer_cik,
+        exchange="SYNTHETIC",
+    )
+    if instrument.instrument_id != series.bars[0].instrument_id:
+        raise DemoPreparationError("Instrument identity does not match dataset.")
+    market.upsert_price_bars(list(series.bars))
+
+
+def _in_transaction(conn: duckdb.DuckDBPyConnection, work: Callable[[], object]) -> None:
+    conn.execute("BEGIN TRANSACTION")
+    try:
+        work()
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _write_manifest(paths: DemoPaths, digest: str, dataset: DemoDataset) -> None:

@@ -156,3 +156,32 @@ def test_preparation_and_reads_make_no_network_calls(
     assert service.status().prepared
     assert service.securities()
     assert os.path.exists(service.paths.database)
+
+
+def test_preparation_does_not_balloon_process_memory(tmp_path: Path) -> None:
+    """Regression: one transaction over every price bar peaked >1 GiB above the baseline."""
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    code = "\n".join(
+        [
+            "import sys",
+            f"sys.path[:0] = [{str(root / 'scripts')!r}]",
+            "from qualify_sec_memory import process_memory",
+            "from equitytrace.demo.prepare import prepare_demo",
+            "from pathlib import Path",
+            "before = process_memory()[1]",
+            f"prepare_demo(Path({str(tmp_path / 'mem-demo')!r}))",
+            "print((process_memory()[1] - before) / 2**20)",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "PYTHONPATH": str(root / "src")},
+    )
+    growth_mib = float(result.stdout.strip().splitlines()[-1])
+    assert growth_mib < 600, f"preparation raised peak memory by {growth_mib:.0f} MiB"
